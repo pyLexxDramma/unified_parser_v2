@@ -930,6 +930,8 @@ async def get_task(request: Request, task_id: str):
                 "summary_fields": SUMMARY_FIELDS,
                 "output_dir": output_dir,
                 "show_problem_cards": show_problem_cards,
+                # Префикс корневого пути (для работы за reverse-proxy, например /parser)
+                "url_prefix": request.scope.get("root_path", "") if hasattr(request, "scope") else "",
             },
         )
     except Exception as e:

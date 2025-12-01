@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <title>Статус задачи</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+    <link rel="stylesheet" href="{{ (url_prefix or '') }}/static/style.css">
 </head>
 <body>
 <div class="container task-page">
     <header class="task-header">
-        <a href="/" class="link-back">← Назад к форме</a>
+        <a href="{{ (url_prefix or '') }}/" class="link-back">← Назад к форме</a>
         <h1>Статус задачи</h1>
         {% if task %}
         <div class="status-row">
@@ -124,7 +124,7 @@
             <h2 style="margin: 0;">Агрегированные метрики</h2>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
                 {% if task.status == 'COMPLETED' %}
-                    <a href="/tasks/{{ task.task_id }}/download-pdf" class="btn-download-pdf" style="padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 5px; font-weight: 600;">📥 Скачать PDF отчет</a>
+                    <a href="{{ (url_prefix or '') }}/tasks/{{ task.task_id }}/download-pdf" class="btn-download-pdf" style="padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 5px; font-weight: 600;">📥 Скачать PDF отчет</a>
                 {% endif %}
                 {% if task.status == 'COMPLETED' or task.status == 'FAILED' %}
                     <button type="button"
@@ -560,8 +560,8 @@
 
 <script>
     // Префикс корневого пути приложения (нужен, если приложение висит не на /, а, например, на /parser)
-    // FastAPI проставляет root_path при запуске с параметром --root-path
-    window.ROOT_PATH = "{{ request.scope.get('root_path') if request and request.scope and request.scope.get('root_path') else '' }}";
+    // Берём его из url_prefix, который формируется из request.scope['root_path']
+    window.ROOT_PATH = "{{ url_prefix or '' }}";
 
     // Функции управления задачей (должны быть глобальными)
     // Определяем функции ДО загрузки страницы, чтобы они были доступны для onclick
@@ -849,7 +849,7 @@
         updateDuration(); // Первое обновление сразу
     })();
     {% endif %}
-</script>
-<script src="{{ url_for('static', path='task_status.js') }}"></script>
+        </script>
+        <script src="{{ (url_prefix or '') }}/static/task_status.js"></script>
 </body>
 </html>
