@@ -141,6 +141,9 @@ class GisParser(BaseParser):
             logger.warning(f"Error finding scrollable element: {e}")
         
         while scroll_iterations < max_scrolls:
+            if self._is_stopped():
+                logger.info("2GIS scroll: stop flag detected, breaking scroll loop")
+                break
             try:
                 page_source, soup = self._get_page_source_and_soup()
                 
@@ -556,6 +559,9 @@ class GisParser(BaseParser):
             seen_review_keys: set[str] = set()
 
             for page_url in pages_to_process:
+                if self._is_stopped():
+                    logger.info(f"2GIS reviews: stop flag detected before processing reviews page {page_url}, breaking pages loop")
+                    break
                 try:
                     if page_url != reviews_url:
                         logger.info(f"Processing reviews page: {page_url}")
@@ -572,6 +578,9 @@ class GisParser(BaseParser):
                         )
 
                     for review_elem in review_elements:
+                        if self._is_stopped():
+                            logger.info("2GIS reviews: stop flag detected inside reviews loop, breaking")
+                            break
                         # Автор
                         author_elem = review_elem.select_one(
                             '[class*="author"], [class*="user"], [class*="name"]'
@@ -870,6 +879,9 @@ class GisParser(BaseParser):
             last_review_count = 0
             
             while scroll_iterations < max_scrolls:
+                if self._is_stopped():
+                    logger.info("2GIS reviews scroll: stop flag detected, breaking scroll loop")
+                    break
                 page_source, soup = self._get_page_source_and_soup()
                 review_selectors = [
                     'div[class*="review"]',
@@ -1038,6 +1050,9 @@ class GisParser(BaseParser):
                 pages_to_process.extend(pagination_urls[: max_pages - 1])
 
             for page_num, page_url in enumerate(pages_to_process, start=1):
+                if self._is_stopped():
+                    logger.info(f"2GIS: stop flag detected before processing search page {page_num}, breaking pages loop")
+                    break
                 try:
                     if page_num > 1:
                         logger.info(f"Processing 2GIS search page {page_num}/{len(pages_to_process)}: {page_url}")
@@ -1118,6 +1133,9 @@ class GisParser(BaseParser):
             ]
 
             for idx, card_url in enumerate(card_urls[: self._max_records], start=1):
+                if self._is_stopped():
+                    logger.info(f"2GIS: stop flag detected before processing card {idx}, breaking cards loop")
+                    break
                 try:
                     self._update_progress(
                         f"Сканирование карточек: {idx}/{min(len(card_urls), self._max_records)}"

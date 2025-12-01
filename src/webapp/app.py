@@ -235,6 +235,11 @@ def _run_parser_task(parser_class, url: str, task_id: str, source: str):
             sys.stdout.flush()
 
         parser.set_progress_callback(update_progress)
+        # Callback, чтобы парсер мог в любой момент проверить, не остановлена ли задача
+        try:
+            parser.set_stop_check_callback(lambda: is_task_stopped(task_id))
+        except Exception:
+            logger.debug("Could not set stop_check_callback on parser instance")
 
         logger.info(f"Task {task_id} ({source}): Starting parse for URL: {url}")
         try:
@@ -323,6 +328,10 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                     gis_stats_list: List[Dict[str, Any]] = []
 
                     for city in cities_list:
+                        # Позволяем пользователю остановить задачу посреди обхода городов
+                        if is_task_stopped(task_id):
+                            logger.info(f"Task {task_id}: stop flag detected before processing city '{city}', breaking city loop (both sources)")
+                            break
                         # Yandex
                         yandex_url = _generate_yandex_url(form_data.company_name, "city", city)
                         update_task_status(task_id, "RUNNING", f"Yandex: Парсинг города {city}...")
@@ -340,6 +349,10 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                                 yandex_stats_list.append(yandex_result["aggregated_info"])
 
                         # 2GIS
+                        if is_task_stopped(task_id):
+                            logger.info(f"Task {task_id}: stop flag detected after Yandex for city '{city}', skipping 2GIS and remaining cities (both sources)")
+                            break
+
                         gis_url = _generate_gis_url(
                             form_data.company_name,
                             form_data.company_site,
@@ -440,13 +453,17 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                         YandexParser, yandex_url, task_id, "Yandex"
                     )
 
-                    update_task_status(task_id, "RUNNING", "Запуск парсера 2GIS...")
-                    logger.info(
-                        f"Task {task_id}: Starting 2GIS parser after Yandex (sequential execution)..."
-                    )
-                    gis_result, gis_error = _run_parser_task(
-                        GisParser, gis_url, task_id, "2GIS"
-                    )
+                    if is_task_stopped(task_id):
+                        logger.info(f"Task {task_id}: stop flag detected after Yandex in 'both' mode, skipping 2GIS")
+                        gis_result, gis_error = None, None
+                    else:
+                        update_task_status(task_id, "RUNNING", "Запуск парсера 2GIS...")
+                        logger.info(
+                            f"Task {task_id}: Starting 2GIS parser after Yandex (sequential execution)..."
+                        )
+                        gis_result, gis_error = _run_parser_task(
+                            GisParser, gis_url, task_id, "2GIS"
+                        )
 
                     # Собираем детальные карточки по обоим источникам
                     if yandex_result:
@@ -530,10 +547,26 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                     task.detailed_results = all_cards
                     task.statistics = statistics
 
-                if yandex_error or gis_error:
-                    update_task_status(task_id, "COMPLETED", f"Завершено с ошибками: Yandex={bool(yandex_error)}, 2GIS={bool(gis_error)}")
+                # Финальный статус с учётом возможной остановки пользователем
+                cards_count = len(all_cards)
+                if is_task_stopped(task_id):
+                    update_task_status(
+                        task_id,
+                        TaskStatus.COMPLETED,
+                        f"Парсинг остановлен пользователем. Найдено карточек: {cards_count}",
+                    )
+                elif yandex_error or gis_error:
+                    update_task_status(
+                        task_id,
+                        TaskStatus.COMPLETED,
+                        f"Завершено с ошибками: Yandex={bool(yandex_error)}, 2GIS={bool(gis_error)}",
+                    )
                 else:
-                    update_task_status(task_id, "COMPLETED", f"Парсинг завершен. Найдено карточек: {len(all_cards)}")
+                    update_task_status(
+                        task_id,
+                        TaskStatus.COMPLETED,
+                        f"Парсинг завершен. Найдено карточек: {cards_count}",
+                    )
             elif form_data.source == 'yandex':
                 all_cards: List[Dict[str, Any]] = []
                 stats: Dict[str, Any] = {}
@@ -544,6 +577,9 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                     error: Optional[str] = None
 
                     for city in cities_list:
+                        if is_task_stopped(task_id):
+                            logger.info(f"Task {task_id}: stop flag detected before Yandex city '{city}' (single source), breaking city loop")
+                            break
                         url = _generate_yandex_url(form_data.company_name, "city", city)
                         update_task_status(task_id, "RUNNING", f"Yandex: Парсинг города {city}...")
                         logger.info(f"Task {task_id}: Starting Yandex parser for city {city} (single source)...")
@@ -631,11 +667,12 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                         task.detailed_results = all_cards
                         task.statistics = stats
 
-                        update_task_status(
-                            task_id,
-                            "COMPLETED",
-                            f"Парсинг завершен. Найдено карточек: {len(all_cards)}",
+                        msg = (
+                            f"Парсинг остановлен пользователем. Найдено карточек: {len(all_cards)}"
+                            if is_task_stopped(task_id)
+                            else f"Парсинг завершен. Найдено карточек: {len(all_cards)}"
                         )
+                        update_task_status(task_id, TaskStatus.COMPLETED, msg)
                     else:
                         update_task_status(
                             task_id, "COMPLETED", "Парсинг завершен. Карточки не найдены"
@@ -670,11 +707,12 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                             stats["combined"] = result["aggregated_info"]
                         task.statistics = stats
 
-                        update_task_status(
-                            task_id,
-                            "COMPLETED",
-                            f"Парсинг завершен. Найдено карточек: {len(result['cards_data'])}",
+                        msg = (
+                            f"Парсинг остановлен пользователем. Найдено карточек: {len(result['cards_data'])}"
+                            if is_task_stopped(task_id)
+                            else f"Парсинг завершен. Найдено карточек: {len(result['cards_data'])}"
                         )
+                        update_task_status(task_id, TaskStatus.COMPLETED, msg)
                     else:
                         update_task_status(
                             task_id, "COMPLETED", "Парсинг завершен. Карточки не найдены"
@@ -688,6 +726,9 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                     error: Optional[str] = None
 
                     for city in cities_list:
+                        if is_task_stopped(task_id):
+                            logger.info(f"Task {task_id}: stop flag detected before 2GIS city '{city}' (single source), breaking city loop")
+                            break
                         url = _generate_gis_url(
                             form_data.company_name,
                             form_data.company_site,

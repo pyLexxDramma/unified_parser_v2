@@ -85,7 +85,7 @@
                    value="{{ last_form.location if last_form and last_form.location else '' }}">
         </div>
 
-        <div class="form-group" id="cities_group" style="display: none; max-height: 320px; overflow-y: auto; border: 1px solid #e0e0e0; padding: 10px; border-radius: 6px; background: #fafafa;">
+        <div class="form-group" id="cities_group" style="display: none; max-height: 360px; overflow-y: auto; border: 1px solid #e0e0e0; padding: 10px; border-radius: 6px; background: #fafafa;">
             <label>Регионы и города (от 10&nbsp;000 жителей):</label>
             <p style="font-size: 0.85em; color: #666; margin-top: 4px;">
                 При выборе режима <strong>«Страна / общий поиск»</strong> вы можете отметить города, по которым нужно собрать данные.
@@ -93,6 +93,14 @@
             <div style="margin-top: 6px; margin-bottom: 6px;">
                 <input type="text" id="city_filter" placeholder="Быстрый поиск по городу..."
                        style="width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid #d0d0d0; font-size: 0.85em;">
+            </div>
+            <div style="display:flex; gap:6px; margin-bottom:8px;">
+                <input type="text" id="custom_city_input" placeholder="Добавить свой город (например: Химки)"
+                       style="flex:1; padding: 4px 8px; border-radius: 4px; border: 1px solid #d0d0d0; font-size: 0.85em;">
+                <button type="button" id="add_custom_city_btn"
+                        style="padding: 4px 10px; border-radius: 4px; border: none; background:#2F80ED; color:#fff; font-size:0.85em; cursor:pointer;">
+                    Добавить
+                </button>
             </div>
             <div id="cities_container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; margin-top: 4px;">
                 <!-- Чекбоксы городов будут подставлены скриптом ниже -->
@@ -119,6 +127,74 @@
         const PRESELECTED_CITIES = PRESELECTED_CITIES_STR
             ? PRESELECTED_CITIES_STR.split(/[;,]/).map(s => s.trim()).filter(Boolean)
             : [];
+
+        const CUSTOM_GROUP_ID = 'custom_cities_group';
+
+        function ensureCustomGroup() {
+            const container = document.getElementById('cities_container');
+            if (!container) return null;
+            let groupDiv = document.getElementById(CUSTOM_GROUP_ID);
+            if (!groupDiv) {
+                groupDiv = document.createElement('div');
+                groupDiv.id = CUSTOM_GROUP_ID;
+                groupDiv.style.backgroundColor = '#ffffff';
+                groupDiv.style.border = '1px dashed #b0bec5';
+                groupDiv.style.borderRadius = '4px';
+                groupDiv.style.padding = '6px 8px';
+                groupDiv.style.marginTop = '6px';
+
+                const title = document.createElement('div');
+                title.textContent = 'Добавленные города';
+                title.style.fontWeight = 'bold';
+                title.style.marginBottom = '4px';
+                title.style.color = '#37474F';
+                groupDiv.appendChild(title);
+
+                container.appendChild(groupDiv);
+            }
+            return groupDiv;
+        }
+
+        function addCustomCityCheckbox(cityName, options) {
+            const opts = options || {};
+            const checked = opts.checked !== false; // по умолчанию true
+            const container = document.getElementById('cities_container');
+            if (!container) return;
+
+            const normalized = (cityName || '').trim();
+            if (!normalized) return;
+
+            // Если чекбокс с таким городом уже есть, просто отмечаем его
+            const existing = Array.from(container.querySelectorAll('.city-checkbox'))
+                .find(cb => cb.value.trim().toLowerCase() === normalized.toLowerCase());
+            if (existing) {
+                if (checked) {
+                    existing.checked = true;
+                    updateSelectedCitiesSummary();
+                }
+                return;
+            }
+
+            const groupDiv = ensureCustomGroup();
+            if (!groupDiv) return;
+
+            const label = document.createElement('label');
+            label.style.display = 'block';
+            label.style.fontSize = '0.85em';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.value = normalized;
+            checkbox.className = 'city-checkbox';
+            checkbox.checked = checked;
+            checkbox.addEventListener('change', updateSelectedCitiesSummary);
+
+            label.appendChild(checkbox);
+            label.appendChild(document.createTextNode(' ' + normalized));
+            groupDiv.appendChild(label);
+
+            updateSelectedCitiesSummary();
+        }
 
         // Инициализация чекбоксов городов (группировка по регионам, данные из JSON)
         (async function initCities() {
@@ -168,6 +244,16 @@
                     });
 
                     container.appendChild(groupDiv);
+                });
+
+                // Добавляем пользовательские города, которых нет в JSON, но они есть в PRESELECTED_CITIES
+                const existingNames = Array.from(container.querySelectorAll('.city-checkbox'))
+                    .map(cb => cb.value.trim().toLowerCase());
+                PRESELECTED_CITIES.forEach(city => {
+                    const lower = city.trim().toLowerCase();
+                    if (lower && !existingNames.includes(lower)) {
+                        addCustomCityCheckbox(city, {checked: true});
+                    }
                 });
 
                 // После инициализации обновим блок с выбранными городами (учитывая возможные PRESELECTED_CITIES)
@@ -266,6 +352,29 @@
         searchScopeSelect.addEventListener('change', updateLocationVisibility);
         // Инициализируем видимость при загрузке
         updateLocationVisibility();
+
+        // Обработка добавления пользовательского города
+        (function initCustomCityAdder() {
+            const input = document.getElementById('custom_city_input');
+            const btn = document.getElementById('add_custom_city_btn');
+            if (!input || !btn) return;
+
+            function handleAdd() {
+                const value = input.value.trim();
+                if (!value) return;
+                addCustomCityCheckbox(value, {checked: true});
+                input.value = '';
+                input.focus();
+            }
+
+            btn.addEventListener('click', handleAdd);
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAdd();
+                }
+            });
+        })();
 
         // Перед отправкой формы собираем выбранные города в скрытое поле
         document.getElementById('parse_form').addEventListener('submit', function () {

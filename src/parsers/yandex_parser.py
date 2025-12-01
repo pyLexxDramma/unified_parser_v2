@@ -766,6 +766,9 @@ class YandexParser(BaseParser):
             scroll_container = self.driver.execute_script(scroll_container_script)
             if scroll_container:
                 for _ in range(max_scroll_iterations):
+                    if self._is_stopped():
+                        logger.info("Yandex reviews scroll: stop flag detected, breaking scroll loop")
+                        break
                     try:
                         self.driver.execute_script(f"arguments[0].scrollTop += {scroll_step};", scroll_container)
                         time.sleep(0.3)
@@ -817,6 +820,9 @@ class YandexParser(BaseParser):
         seen_review_keys = set()
         
         for page_url in pages_to_process:
+            if self._is_stopped():
+                logger.info(f"Yandex reviews: stop flag detected before processing reviews page {page_url}, breaking pages loop")
+                break
             try:
                 if page_url != current_url:
                     logger.info(f"Processing reviews page: {page_url}")
@@ -843,6 +849,9 @@ class YandexParser(BaseParser):
                 review_elements = soup_content.select('li, div.business-review-view, div.review-item-view')
                 
                 for review_elem in review_elements:
+                    if self._is_stopped():
+                        logger.info("Yandex reviews: stop flag detected inside reviews loop, breaking")
+                        break
                     author_name = ""
                     author_elem = review_elem.select_one('a[href*="/user/"][class*="business-review-view__link"], a[href*="/user/"]')
                     if author_elem:
@@ -1180,6 +1189,9 @@ class YandexParser(BaseParser):
         stable_count = 0
         
         while scroll_iterations < max_scrolls:
+            if self._is_stopped():
+                logger.info("Yandex scroll: stop flag detected, breaking scroll loop")
+                break
             try:
                 page_source, soup = self._get_page_source_and_soup()
                 
@@ -1352,6 +1364,9 @@ class YandexParser(BaseParser):
                 pages_to_process.extend(sorted(all_pages_urls)[:20])
             
             for page_num, page_url in enumerate(pages_to_process, start=1):
+                if self._is_stopped():
+                    logger.info(f"Yandex cards: stop flag detected before processing search page {page_num}, breaking pages loop")
+                    break
                 try:
                     if page_url != search_query_url:
                         logger.info(f"Processing search page {page_num}/{len(pages_to_process)}: {page_url}")
@@ -1407,6 +1422,9 @@ class YandexParser(BaseParser):
             logger.info(f"Found {len(all_card_urls)} unique card URLs from {len(pages_to_process)} pages")
             
             for idx, card_url in enumerate(list(all_card_urls)[:self._max_records]):
+                if self._is_stopped():
+                    logger.info(f"Yandex cards: stop flag detected before processing card index {idx}, breaking cards loop")
+                    break
                 if len(self._collected_card_data) >= self._max_records:
                     break
                 
