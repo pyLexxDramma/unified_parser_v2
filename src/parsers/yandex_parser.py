@@ -98,6 +98,54 @@ class YandexParser(BaseParser):
         self._collected_card_data: List[Dict[str, Any]] = []
         self._search_query_name: str = ""
 
+    def _estimate_sentiment(self, text: str) -> int:
+        """
+        Грубая эвристика для оценки «смысла» отзыва по тексту:
+        - возвращает 1 для явно положительных текстов
+        - -1 для явно отрицательных
+        - 0, если сигнал слабый/смешанный.
+        Используется только как корректировка к звёздам, если они
+        явно противоречат содержимому отзыва.
+        """
+        if not text:
+            return 0
+
+        t = text.lower()
+
+        positive_markers = [
+            "очень хороший", "очень хорошо", "весьма удачно", "весьма хороший",
+            "рекомендую", "советую", "могу порекомендовать", "буду рекомендовать",
+            "понравил", "нравит", "нравится", "понравилось",
+            "отличн", "классн", "замечательн", "прекрасн", "шикарн",
+            "доволен", "довольн", "приятн", "порадовал", "порадовали",
+            "милые продавцы", "мило встретили", "добрые продавцы",
+            "положительное впечатление", "положительные впечатления",
+            "приятное впечатление", "осталось впечатление", "бренд приятно удивляет",
+        ]
+
+        negative_markers = [
+            "ужасн", "отвратительн", "отвратит", "кошмар", "худший",
+            "плох", "ничего хорошего", "разочаров", "разочарован",
+            "агрессивн", "хамств", "груб", "грубо", "нагл", "хамы",
+            "обман", "обманули", "обманщик", "мошенник",
+            "помощи ноль", "не помогли", "не помог", "игнорир",
+            "отвратительное отношение", "ужасное отношение",
+        ]
+
+        score = 0
+        for kw in positive_markers:
+            if kw in t:
+                score += 1
+        for kw in negative_markers:
+            if kw in t:
+                score -= 1
+
+        if score >= 2:
+            return 1
+        if score <= -2:
+            return -1
+        return 0
+
     def get_url_pattern(self) -> str:
         return r'https?://yandex\.ru/maps/\?.*'
 
@@ -1015,13 +1063,26 @@ class YandexParser(BaseParser):
                             'response_date': format_russian_date(response_date) if response_date else "",
                         })
                         
-                        # Классификация: 1–2★ — негатив, 3★ — нейтрально, 4–5★ — позитив.
-                        if rating_value >= 4:
+                        # Классификация: учитываем и звёзды, и смысл текста.
+                        # Базовое правило: 1–2★ — негатив, 3★ — нейтрально, 4–5★ — позитив.
+                        # Если звёзды явно противоречат тексту (по эвристике _estimate_sentiment),
+                        # даём приоритет смыслу текста.
+                        sentiment = self._estimate_sentiment(review_text or "")
+
+                        if sentiment > 0 and rating_value <= 3:
+                            # Низкие звёзды, но явный позитивный текст — считаем позитивом.
                             reviews_info['positive_reviews'] += 1
-                        elif rating_value in (1, 2):
+                        elif sentiment < 0 and rating_value >= 3:
+                            # Высокие звёзды, но явно негативный текст — считаем негативом.
                             reviews_info['negative_reviews'] += 1
-                        elif rating_value == 3:
-                            reviews_info['neutral_reviews'] += 1
+                        else:
+                            # Обычный путь: классифицируем по звёздам.
+                            if rating_value >= 4:
+                                reviews_info['positive_reviews'] += 1
+                            elif rating_value in (1, 2):
+                                reviews_info['negative_reviews'] += 1
+                            elif rating_value == 3:
+                                reviews_info['neutral_reviews'] += 1
             except Exception as page_error:
                 logger.warning(f"Error processing reviews page {page_url}: {page_error}", exc_info=True)
                 continue

@@ -14,4 +14,6 @@ slowapi==0.1.9
 pydantic==2.12.4
 urllib3==2.5.0
 certifi==2025.11.12
+itsdangerous==2.2.0
+psutil
 

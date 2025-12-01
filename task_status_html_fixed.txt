@@ -120,21 +120,11 @@
     </section>
 
     <section class="task-summary">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap: 10px; flex-wrap: wrap;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
             <h2 style="margin: 0;">Агрегированные метрики</h2>
-            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                {% if task.status == 'COMPLETED' %}
-                    <a href="/tasks/{{ task.task_id }}/download-pdf" class="btn-download-pdf" style="padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 5px; font-weight: 600;">📥 Скачать PDF отчет</a>
-                {% endif %}
-                {% if task.status == 'COMPLETED' or task.status == 'FAILED' %}
-                    <button type="button"
-                            onclick="restartParsing('{{ task.task_id }}')"
-                            class="btn-control btn-restart"
-                            style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">
-                        🔁 Повторить последний парсинг
-                    </button>
-                {% endif %}
-            </div>
+            {% if task.status == 'COMPLETED' %}
+                <a href="/tasks/{{ task.task_id }}/download-pdf" class="btn-download-pdf" style="padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 5px; font-weight: 600;">📥 Скачать PDF отчет</a>
+            {% endif %}
         </div>
         {% if statistics %}
             {% set company_name = task.source_info.get('company_name', 'Компания') if task.source_info else 'Компания' %}
@@ -853,3 +843,8 @@
 <script src="{{ url_for('static', path='task_status.js') }}"></script>
 </body>
 </html>
+
+
+
+
+

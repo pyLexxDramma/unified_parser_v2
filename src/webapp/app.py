@@ -4,6 +4,7 @@ import logging
 import threading
 import os
 import urllib.parse
+import re
 from fastapi import FastAPI, Request, Depends, HTTPException, Form
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from fastapi import status as http_status
@@ -11,7 +12,6 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
-import re
 import secrets
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -1050,4 +1050,194 @@ async def api_stop_task(request: Request, task_id: str):
         # а фронт через polling дождётся статуса COMPLETED/FAILED и перезагрузит страницу.
         return JSONResponse({"success": True})
     return JSONResponse({"success": False, "error": "Cannot stop this task"}, status_code=400)
+
+
+@app.post("/api/tasks/{task_id}/restart")
+async def api_restart_task(request: Request, task_id: str):
+    """
+    Перезапуск последнего парсинга:
+    - находит существующую задачу;
+    - создаёт новую задачу с теми же параметрами (company_name, site, source, scope, location, cities, email);
+    - запускает её в фоне и возвращает ID новой задачи.
+    """
+    if not check_auth(request):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+
+    old_task = active_tasks.get(task_id)
+    if not old_task:
+        return JSONResponse({"success": False, "error": "Task not found"}, status_code=404)
+
+    source_info = old_task.source_info or {}
+
+    try:
+        form_data = ParsingForm(
+            company_name=source_info.get("company_name", ""),
+            company_site=source_info.get("company_site", ""),
+            source=source_info.get("source", ""),
+            email=old_task.email or "",
+            output_filename="report.csv",
+            search_scope=source_info.get("search_scope", "country") or "country",
+            location=source_info.get("location", "") or "",
+            cities=source_info.get("cities", "") or "",
+        )
+    except Exception as e:
+        logger.error(f"Failed to reconstruct form data for restart from task {task_id}: {e}", exc_info=True)
+        return JSONResponse(
+            {"success": False, "error": "Невозможно восстановить параметры задачи для перезапуска"},
+            status_code=400,
+        )
+
+    # Создаём новую задачу и запускаем для неё тот же сценарий, что и при обычном старте
+    new_task_id = create_task(
+        email=form_data.email,
+        source_info={
+            "company_name": form_data.company_name,
+            "company_site": form_data.company_site,
+            "source": form_data.source,
+            "search_scope": form_data.search_scope,
+            "location": form_data.location,
+            "cities": getattr(form_data, "cities", ""),
+        },
+    )
+    logger.info(f"Restart requested: old task {task_id}, new task {new_task_id}")
+
+    # Воспользуемся существующей логикой: запустим тот же run_parsing, что и в /start_parsing,
+    # но с теми же параметрами form_data, просто под другим task_id.
+    def run_parsing_restart():
+        # Лёгкий способ — вызвать существующий эндпоинт start_parsing "как функцию",
+        # но нам нужен новый task_id, поэтому минимально повторяем его логику:
+        from copy import deepcopy
+        # Создаём временный клон form_data, чтобы не трогать оригинал
+        cloned_form = deepcopy(form_data)
+        # Переиспользуем глобальный код старта: просто вызываем внутреннюю функцию,
+        # имитируя тот же путь, что и в start_parsing.
+        # Здесь мы делаем упрощённый путь: повторно вызываем _run_parser_task
+        # ровно с теми же URL, что и в start_parsing, но для new_task_id.
+        try:
+            # Разбираем список городов для country-режима
+            cities_list: List[str] = []
+            if cloned_form.search_scope == 'country' and getattr(cloned_form, "cities", ""):
+                cities_list = _parse_cities(cloned_form.cities)
+
+            # Чтобы не тащить весь сложный код сюда, просто дергаем /start_parsing
+            # через внутренний вызов, но это потребовало бы Request. Поэтому для
+            # перезапуска поддерживаем только базовый сценарий: один общий поиск.
+            if cloned_form.source == 'both':
+                yandex_url = _generate_yandex_url(
+                    cloned_form.company_name, cloned_form.search_scope, cloned_form.location
+                )
+                gis_url = _generate_gis_url(
+                    cloned_form.company_name,
+                    cloned_form.company_site,
+                    cloned_form.search_scope,
+                    cloned_form.location,
+                )
+
+                all_cards: List[Dict[str, Any]] = []
+                statistics: Dict[str, Any] = {}
+
+                yandex_result, yandex_error = _run_parser_task(YandexParser, yandex_url, new_task_id, "Yandex")
+                if yandex_result:
+                    cards = yandex_result.get("cards_data", [])
+                    for card in cards:
+                        card["source"] = "yandex"
+                    all_cards.extend(cards)
+                    if yandex_result.get("aggregated_info"):
+                        statistics["yandex"] = yandex_result["aggregated_info"]
+
+                gis_result, gis_error = _run_parser_task(GisParser, gis_url, new_task_id, "2GIS")
+                if gis_result:
+                    cards = gis_result.get("cards_data", [])
+                    for card in cards:
+                        card["source"] = "2gis"
+                    all_cards.extend(cards)
+                    if gis_result.get("aggregated_info"):
+                        statistics["2gis"] = gis_result["aggregated_info"]
+
+                if all_cards:
+                    writer = CSVWriter(settings=settings)
+                    results_dir = settings.app_config.writer.output_dir
+                    os.makedirs(results_dir, exist_ok=True)
+                    output_path = os.path.join(results_dir, cloned_form.output_filename)
+                    writer.set_file_path(output_path)
+                    with writer:
+                        for card in all_cards:
+                            writer.write(card)
+
+                    task = active_tasks[new_task_id]
+                    task.result_file = cloned_form.output_filename
+                    task.detailed_results = all_cards
+                    task.statistics = statistics
+
+                    update_task_status(new_task_id, "COMPLETED", f"Парсинг завершен. Найдено карточек: {len(all_cards)}")
+                else:
+                    update_task_status(new_task_id, "COMPLETED", "Парсинг завершен. Карточки не найдены")
+            else:
+                # Один источник: повторно запускаем его так же, как в исходном коде
+                source_name = "Yandex" if cloned_form.source.lower() == "yandex" else "2GIS"
+                update_task_status(new_task_id, "RUNNING", f"{source_name}: Запуск парсера...")
+
+                if cloned_form.source.lower() == "yandex":
+                    url = _generate_yandex_url(cloned_form.company_name, cloned_form.search_scope, cloned_form.location)
+                    parser_class = YandexParser
+                else:
+                    url = _generate_gis_url(
+                        cloned_form.company_name,
+                        cloned_form.company_site,
+                        cloned_form.search_scope,
+                        cloned_form.location,
+                    )
+                    parser_class = GisParser
+
+                result, error = _run_parser_task(parser_class, url, new_task_id, source_name)
+
+                if result and isinstance(result, dict):
+                    cards = result.get("cards_data", [])
+                    for card in cards:
+                        card["source"] = cloned_form.source.lower()
+
+                    writer = CSVWriter(settings=settings)
+                    results_dir = settings.app_config.writer.output_dir
+                    os.makedirs(results_dir, exist_ok=True)
+                    output_path = os.path.join(results_dir, cloned_form.output_filename)
+                    writer.set_file_path(output_path)
+                    with writer:
+                        for card in cards:
+                            writer.write(card)
+
+                    task = active_tasks[new_task_id]
+                    task.result_file = cloned_form.output_filename
+                    task.detailed_results = cards
+                    task.statistics = {
+                        cloned_form.source.lower(): result.get("aggregated_info", {})
+                    }
+
+                    update_task_status(
+                        new_task_id,
+                        "COMPLETED",
+                        f"Парсинг завершен. Найдено карточек: {len(cards)}",
+                    )
+                else:
+                    if error:
+                        update_task_status(
+                            new_task_id,
+                            "FAILED",
+                            f"{source_name}: Ошибка парсинга: {str(error)}",
+                            error=str(error),
+                        )
+                    else:
+                        update_task_status(
+                            new_task_id,
+                            "COMPLETED",
+                            "Парсинг завершен. Карточки не найдены",
+                        )
+        except Exception as e:
+            logger.error(f"Error in restart parsing task {new_task_id}: {e}", exc_info=True)
+            update_task_status(new_task_id, "FAILED", f"Критическая ошибка: {str(e)}", error=str(e))
+
+    thread = threading.Thread(target=run_parsing_restart, daemon=True)
+    thread.start()
+    logger.info(f"Started restart parsing thread for new task {new_task_id}")
+
+    return JSONResponse({"success": True, "new_task_id": new_task_id})
 
