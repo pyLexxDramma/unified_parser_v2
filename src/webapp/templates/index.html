@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Web Scraper</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="{{ (url_prefix or '') }}/static/style.css">
 </head>
 <body>
 <div class="container">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <h1>Web Scraper</h1>
-        <a href="/logout" style="color: #666; text-decoration: none; font-size: 0.9em;">Выйти</a>
+        <a href="{{ (url_prefix or '') }}/logout" style="color: #666; text-decoration: none; font-size: 0.9em;">Выйти</a>
     </div>
 
     {% if error %}
@@ -20,7 +20,7 @@
     <div class="message success">{{ success }}</div>
     {% endif %}
 
-    <form action="/start_parsing" method="post" id="parse_form">
+    <form action="{{ (url_prefix or '') }}/start_parsing" method="post" id="parse_form">
         <div class="form-group">
             <label for="company_name">Введите название компании:</label>
             <input type="text" id="company_name" name="company_name" placeholder="Например: ООО Ромашка" required
@@ -122,6 +122,9 @@
     </form>
 
     <script>
+        // Базовый префикс для API и статики (например, /parser)
+        window.ROOT_PATH = "{{ url_prefix or '' }}";
+
         // Предварительно выбранные города из последнего заполнения формы
         const PRESELECTED_CITIES_STR = "{{ last_form.cities if last_form and last_form.cities else '' }}";
         const PRESELECTED_CITIES = PRESELECTED_CITIES_STR
@@ -202,7 +205,7 @@
             if (!container) return;
 
             try {
-                const resp = await fetch('/static/cities_ru_10k.json', {cache: 'no-store'});
+                const resp = await fetch(window.ROOT_PATH + '/static/cities_ru_10k.json', {cache: 'no-store'});
                 if (!resp.ok) {
                     console.error('Failed to load cities_ru_10k.json', resp.status);
                     return;

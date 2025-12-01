@@ -50,13 +50,45 @@ settings = Settings()
 # Загружаем пароль: сначала из переменной окружения, потом из config.json, потом дефолтный
 SITE_PASSWORD = os.environ.get("SITE_PASSWORD")
 if not SITE_PASSWORD:
-    if hasattr(settings, 'app_config') and settings.app_config:
-        SITE_PASSWORD = getattr(settings.app_config, 'password', None)
+    if hasattr(settings, "app_config") and settings.app_config:
+        SITE_PASSWORD = getattr(settings.app_config, "password", None)
 if not SITE_PASSWORD:
     SITE_PASSWORD = "admin123"
 
-logger.info(f"Site password loaded: {'*' * len(SITE_PASSWORD) if SITE_PASSWORD else 'NOT SET'}")
-logger.info(f"Password source: {'ENV' if os.environ.get('SITE_PASSWORD') else 'CONFIG' if hasattr(settings, 'app_config') and getattr(settings.app_config, 'password', None) else 'DEFAULT'}")
+logger.info(
+    f"Site password loaded: {'*' * len(SITE_PASSWORD) if SITE_PASSWORD else 'NOT SET'}"
+)
+logger.info(
+    "Password source: "
+    f"{'ENV' if os.environ.get('SITE_PASSWORD') else 'CONFIG' if hasattr(settings, 'app_config') and getattr(settings.app_config, 'password', None) else 'DEFAULT'}"
+)
+
+
+def get_url_prefix(request: Request | None = None) -> str:
+    """
+    Определяет префикс корневого пути для работы за reverse-proxy.
+    Приоритет:
+    1) request.scope['root_path'] (если настроен сервер, передающий root_path)
+    2) переменная окружения URL_PREFIX (можно задать в .env, например '/parser')
+    3) по умолчанию: пустая строка (приложение висит на корне)
+    """
+    scope_prefix = ""
+    if request is not None and hasattr(request, "scope"):
+        scope_prefix = request.scope.get("root_path") or ""
+
+    env_prefix = os.getenv("URL_PREFIX", "").strip()
+
+    prefix = scope_prefix or env_prefix
+
+    if not prefix or prefix == "/":
+        return ""
+
+    # Нормализуем: добавляем ведущий слэш, убираем лишний хвост
+    if not prefix.startswith("/"):
+        prefix = "/" + prefix
+    prefix = prefix.rstrip("/")
+    return prefix
+
 
 class ParsingForm(BaseModel):
     company_name: str
@@ -85,7 +117,7 @@ def check_auth(request: Request) -> bool:
 @app.get("/login")
 async def login_page(request: Request):
     # Префикс корневого пути для работы за reverse-proxy (например, /parser)
-    url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
+    url_prefix = get_url_prefix(request)
     if check_auth(request):
         return RedirectResponse(url=f"{url_prefix}/", status_code=302)
     return templates.TemplateResponse(
@@ -102,16 +134,18 @@ async def login(request: Request, password: str = Form(...)):
     # Убираем пробелы в начале и конце пароля
     password = password.strip()
     expected_password = SITE_PASSWORD.strip() if SITE_PASSWORD else ""
-    url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
-    
-    logger.debug(f"Login attempt: received password length={len(password)}, expected length={len(expected_password)}")
-    
+    url_prefix = get_url_prefix(request)
+
+    logger.debug(
+        f"Login attempt: received password length={len(password)}, expected length={len(expected_password)}"
+    )
+
     if password == expected_password:
         request.session["authenticated"] = True
         logger.info("User authenticated successfully")
         return RedirectResponse(url=f"{url_prefix}/", status_code=302)
     else:
-        logger.warning(f"Failed login attempt: password mismatch")
+        logger.warning("Failed login attempt: password mismatch")
         return templates.TemplateResponse(
             "login.html",
             {
@@ -124,14 +158,14 @@ async def login(request: Request, password: str = Form(...)):
 @app.get("/logout")
 async def logout(request: Request):
     request.session.clear()
-    url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
+    url_prefix = get_url_prefix(request)
     return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
 
 @app.get("/debug/password")
 async def debug_password(request: Request):
     """Временный эндпоинт для отладки пароля (только для разработки)"""
     if not check_auth(request):
-        url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
+        url_prefix = get_url_prefix(request)
         return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
     password_info = {
         "password_length": len(SITE_PASSWORD) if SITE_PASSWORD else 0,
@@ -143,7 +177,7 @@ async def debug_password(request: Request):
 
 @app.get("/")
 async def read_root(request: Request):
-    url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
+    url_prefix = get_url_prefix(request)
     if not check_auth(request):
         return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
     error = request.query_params.get("error")
@@ -900,17 +934,29 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
     thread.start()
     logger.info(f"Started parsing thread for task {task_id}")
 
-    return RedirectResponse(url=f"/tasks/{task_id}", status_code=302)
+    # Редиректим с учетом возможного префикса (например, /parser)
+    url_prefix = get_url_prefix(request)
+    return RedirectResponse(url=f"{url_prefix}/tasks/{task_id}", status_code=302)
 
 @app.get("/tasks/{task_id}")
 async def get_task(request: Request, task_id: str):
     try:
+        url_prefix = get_url_prefix(request)
+
         if not check_auth(request):
-            return RedirectResponse(url="/login", status_code=302)
+            return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
 
         task = active_tasks.get(task_id)
         if not task:
-            return templates.TemplateResponse("task_status.html", {"request": request, "task": None, "error": "Task not found"})
+            return templates.TemplateResponse(
+                "task_status.html",
+                {
+                    "request": request,
+                    "task": None,
+                    "error": "Task not found",
+                    "url_prefix": url_prefix,
+                },
+            )
 
         # Флаг показа «проблемных карточек» и карточек без ответов
         show_problem_param = request.query_params.get("show_problem_cards", "").lower()
@@ -952,7 +998,7 @@ async def get_task(request: Request, task_id: str):
                 "output_dir": output_dir,
                 "show_problem_cards": show_problem_cards,
                 # Префикс корневого пути (для работы за reverse-proxy, например /parser)
-                "url_prefix": request.scope.get("root_path", "") if hasattr(request, "scope") else "",
+                "url_prefix": url_prefix,
             },
         )
     except Exception as e:

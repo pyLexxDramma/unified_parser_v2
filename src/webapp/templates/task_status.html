@@ -651,7 +651,8 @@
         .then(data => {
             if (data.success && data.new_task_id) {
                 // Перенаправляем на новую задачу
-                window.location.href = `/tasks/${data.new_task_id}`;
+                const base = window.ROOT_PATH || '';
+                window.location.href = base + `/tasks/${data.new_task_id}`;
             } else {
                 alert('Ошибка: ' + (data.error || 'Не удалось перезапустить парсинг'));
             }
