@@ -84,36 +84,55 @@ def check_auth(request: Request) -> bool:
 
 @app.get("/login")
 async def login_page(request: Request):
+    # Префикс корневого пути для работы за reverse-proxy (например, /parser)
+    url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
     if check_auth(request):
-        return RedirectResponse(url="/", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+        return RedirectResponse(url=f"{url_prefix}/", status_code=302)
+    return templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "error": None,
+            "url_prefix": url_prefix,
+        },
+    )
 
 @app.post("/login")
 async def login(request: Request, password: str = Form(...)):
     # Убираем пробелы в начале и конце пароля
     password = password.strip()
     expected_password = SITE_PASSWORD.strip() if SITE_PASSWORD else ""
+    url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
     
     logger.debug(f"Login attempt: received password length={len(password)}, expected length={len(expected_password)}")
     
     if password == expected_password:
         request.session["authenticated"] = True
         logger.info("User authenticated successfully")
-        return RedirectResponse(url="/", status_code=302)
+        return RedirectResponse(url=f"{url_prefix}/", status_code=302)
     else:
         logger.warning(f"Failed login attempt: password mismatch")
-        return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный пароль"})
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "error": "Неверный пароль",
+                "url_prefix": url_prefix,
+            },
+        )
 
 @app.get("/logout")
 async def logout(request: Request):
     request.session.clear()
-    return RedirectResponse(url="/login", status_code=302)
+    url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
+    return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
 
 @app.get("/debug/password")
 async def debug_password(request: Request):
     """Временный эндпоинт для отладки пароля (только для разработки)"""
     if not check_auth(request):
-        return RedirectResponse(url="/login", status_code=302)
+        url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
+        return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
     password_info = {
         "password_length": len(SITE_PASSWORD) if SITE_PASSWORD else 0,
         "password_source": "ENV" if os.environ.get('SITE_PASSWORD') else ("CONFIG" if hasattr(settings, 'app_config') and getattr(settings.app_config, 'password', None) else "DEFAULT"),
@@ -124,8 +143,9 @@ async def debug_password(request: Request):
 
 @app.get("/")
 async def read_root(request: Request):
+    url_prefix = request.scope.get("root_path", "") if hasattr(request, "scope") else ""
     if not check_auth(request):
-        return RedirectResponse(url="/login", status_code=302)
+        return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
     error = request.query_params.get("error")
     success = request.query_params.get("success")
     last_form = request.session.get("last_form") if request.session else None
@@ -136,6 +156,7 @@ async def read_root(request: Request):
             "error": error,
             "success": success,
             "last_form": last_form,
+            "url_prefix": url_prefix,
         },
     )
 
