@@ -24,13 +24,52 @@ class PDFWriter:
         self.doc = None
         self.story = []
         self.styles = getSampleStyleSheet()
+        # Базовый шрифт по умолчанию (латиница)
+        self.base_font_name = "Helvetica"
+        # Пытаемся зарегистрировать Unicode‑шрифт, который поддерживает кириллицу
+        self._register_fonts()
         self._setup_styles()
+
+    def _register_fonts(self):
+        """
+        Регистрирует TrueType‑шрифт с поддержкой кириллицы для использования в PDF.
+        Приоритет:
+        1) переменная окружения PDF_FONT_PATH
+        2) распространённые пути для DejaVu Sans / Liberation Sans / Arial
+        3) если ничего не найдено — остаёмся на Helvetica
+        """
+        font_candidates = [
+            os.getenv("PDF_FONT_PATH"),
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/ARIAL.TTF",
+        ]
+
+        for path in font_candidates:
+            if not path:
+                continue
+            try:
+                if os.path.exists(path):
+                    font_name = "AppBaseFont"
+                    pdfmetrics.registerFont(TTFont(font_name, path))
+                    self.base_font_name = font_name
+                    logger.info(f"Registered PDF font '{font_name}' from: {path}")
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to register PDF font from {path}: {e}")
+
+        logger.warning(
+            "Could not register custom TTF font for PDF. "
+            "Falling back to default Helvetica (русский текст может отображаться некорректно)."
+        )
 
     def _setup_styles(self):
         self.styles.add(ParagraphStyle(
             name='CustomTitle',
             parent=self.styles['Heading1'],
             fontSize=24,
+            fontName=self.base_font_name,
             textColor=colors.HexColor('#1976d2'),
             spaceAfter=30,
             alignment=TA_CENTER
@@ -40,6 +79,7 @@ class PDFWriter:
             name='CustomHeading2',
             parent=self.styles['Heading2'],
             fontSize=16,
+            fontName=self.base_font_name,
             textColor=colors.HexColor('#424242'),
             spaceAfter=12,
             spaceBefore=20
@@ -49,6 +89,7 @@ class PDFWriter:
             name='CustomBody',
             parent=self.styles['Normal'],
             fontSize=10,
+            fontName=self.base_font_name,
             spaceAfter=6
         ))
 
@@ -56,6 +97,7 @@ class PDFWriter:
             name='CustomMeta',
             parent=self.styles['Normal'],
             fontSize=9,
+            fontName=self.base_font_name,
             textColor=colors.HexColor('#757575'),
             spaceAfter=3
         ))
@@ -136,7 +178,7 @@ class PDFWriter:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1976d2')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTNAME', (0, 0), (-1, 0), self.base_font_name),
             ('FONTSIZE', (0, 0), (-1, 0), 12),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
@@ -181,7 +223,7 @@ class PDFWriter:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4CAF50')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), self.base_font_name),
                 ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
