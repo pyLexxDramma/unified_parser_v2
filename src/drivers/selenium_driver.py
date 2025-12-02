@@ -209,8 +209,14 @@ class SeleniumDriver(BaseDriver):
         chromedriver_path = None
         import glob
         
+        # Приоритет 0: переменная окружения CHROMEDRIVER_PATH (удобно для прод-сервера)
+        env_chromedriver = os.getenv("CHROMEDRIVER_PATH")
+        if env_chromedriver and os.path.exists(env_chromedriver):
+            chromedriver_path = env_chromedriver
+            logger.info(f"Using ChromeDriver from CHROMEDRIVER_PATH: {chromedriver_path}")
+        
         # Приоритет 1: используем путь из config.json (если указан и существует)
-        if self.settings.chrome.chromedriver_path and os.path.exists(self.settings.chrome.chromedriver_path):
+        if not chromedriver_path and self.settings.chrome.chromedriver_path and os.path.exists(self.settings.chrome.chromedriver_path):
             chromedriver_path = self.settings.chrome.chromedriver_path
             logger.info(f"Using ChromeDriver from config: {chromedriver_path}")
         
