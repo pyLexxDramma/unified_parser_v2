@@ -8,7 +8,7 @@ import time
 from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from selenium.webdriver import Chrome, ChromeOptions as SeleniumChromeOptions
+from selenium.webdriver import Chrome, ChromeOptions as SeleniumChromeOptions, Remote
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.support.ui import WebDriverWait
@@ -137,6 +137,10 @@ class SeleniumDriver(BaseDriver):
             logger.info("Driver already exists, returning")
             return
 
+        # URL удалённого Selenium (например, selenium/standalone-chrome в Docker)
+        remote_url = os.getenv("SELENIUM_REMOTE_URL") or ""
+        remote_url = remote_url.strip()
+
         logger.info("Creating ChromeOptions...")
         options = SeleniumChromeOptions()
         
@@ -206,6 +210,24 @@ class SeleniumDriver(BaseDriver):
             options.add_argument("--disable-notifications")
             logger.info("Headless mode enabled - browser will run in background")
 
+        # Если указан SELENIUM_REMOTE_URL, используем удалённый WebDriver (например, Docker selenium/standalone-chrome)
+        if remote_url:
+            logger.info(f"Using remote Selenium WebDriver at: {remote_url}")
+
+            try:
+                # Создаем Remote WebDriver напрямую, без локального Chrome / Service
+                self.driver = Remote(
+                    command_executor=remote_url,
+                    options=options,
+                )
+                logger.info("Remote WebDriver created successfully")
+                self._is_running = True
+                return
+            except Exception as e:
+                logger.error(f"Failed to create Remote WebDriver at {remote_url}: {e}", exc_info=True)
+                raise Exception(f"Не удалось создать удалённый WebDriver по адресу {remote_url}: {e}")
+
+        # Иначе работаем как раньше: локальный Chrome + chromedriver
         chromedriver_path = None
         import glob
         
