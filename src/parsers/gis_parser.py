@@ -1241,39 +1241,70 @@ class GisParser(BaseParser):
                     logger.error(f"Error processing card {card_url}: {e}", exc_info=True)
                     continue
 
-            # Заполняем агрегированную статистику
+            # Заполняем агрегированную статистику для 2ГИС на основе уже собранных карточек.
+            # ВАЖНО: здесь мы считаем агрегаты как «сумму по карточкам», чтобы цифры
+            # в верхнем блоке (Всего отзывов / Негативных / Позитивных) совпадали
+            # с тем, что пользователь видит в списке карточек.
             total_cards = len(card_data_list)
             aggregated_info['total_cards_found'] = total_cards
 
-            # 1) Основной вариант: средний рейтинг по всем карточкам, если 2ГИС отдал рейтинг карточек.
-            if total_cards > 0 and self._aggregated_data['total_rating_sum'] > 0:
-                aggregated_info['aggregated_rating'] = round(
-                    self._aggregated_data['total_rating_sum'] / total_cards, 2
-                )
+            # Общее количество отзывов и разбивка по тональности — сумма по карточкам.
+            total_reviews = 0
+            total_positive = 0
+            total_negative = 0
+            total_answered = 0
+            total_unanswered = 0
 
-            aggregated_info['aggregated_reviews_count'] = self._aggregated_data['total_reviews_count']
-            aggregated_info['aggregated_positive_reviews'] = self._aggregated_data['total_positive_reviews']
-            aggregated_info['aggregated_negative_reviews'] = self._aggregated_data['total_negative_reviews']
+            ratings: List[float] = []
+
+            for card in card_data_list:
+                # Всего отзывов по карточке
+                reviews_cnt = card.get('card_reviews_count', 0) or 0
+                total_reviews += reviews_cnt
+
+                # Тональность по карточке
+                total_positive += card.get('card_reviews_positive', 0) or 0
+                total_negative += card.get('card_reviews_negative', 0) or 0
+
+                # Ответы / без ответа по карточке
+                total_answered += card.get('card_answered_reviews_count', 0) or 0
+                total_unanswered += card.get('card_unanswered_reviews_count', 0) or 0
+
+                # Рейтинг карточки (если его отдал 2ГИС)
+                rating_str = str(card.get('card_rating', '')).replace(',', '.').strip()
+                try:
+                    if rating_str and rating_str.replace('.', '', 1).isdigit():
+                        rating_val = float(rating_str)
+                        if rating_val > 0:
+                            ratings.append(rating_val)
+                except (ValueError, TypeError):
+                    continue
+
+            aggregated_info['aggregated_reviews_count'] = total_reviews
+            aggregated_info['aggregated_positive_reviews'] = total_positive
+            aggregated_info['aggregated_negative_reviews'] = total_negative
+            aggregated_info['aggregated_answered_reviews_count'] = total_answered
+            aggregated_info['aggregated_unanswered_reviews_count'] = total_unanswered
+
+            # 1) Основной вариант: средний рейтинг по всем карточкам, если 2ГИС отдал рейтинг карточек.
+            if ratings:
+                aggregated_info['aggregated_rating'] = round(sum(ratings) / len(ratings), 2)
 
             # 2) Если по карточкам рейтинг недоступен, но у нас есть разбивка по
             #    позитивным/негативным отзывам, считаем примерный общий рейтинг.
             if (
                 aggregated_info.get('aggregated_rating', 0) == 0
-                and (aggregated_info['aggregated_positive_reviews'] + aggregated_info['aggregated_negative_reviews']) > 0
+                and (total_positive + total_negative) > 0
             ):
-                pos = aggregated_info['aggregated_positive_reviews']
-                neg = aggregated_info['aggregated_negative_reviews']
+                pos = total_positive
+                neg = total_negative
                 total_for_estimate = pos + neg
-                # Грубая оценка: негативные (1–3⭐) ~ 2 балла, позитивные (4–5⭐) ~ 4.5 балла.
+                # Грубая оценка: негативные (1–2⭐) ~ 2 балла, позитивные (4–5⭐) ~ 4.5 балла.
                 approx_rating = (neg * 2.0 + pos * 4.5) / total_for_estimate
                 aggregated_info['aggregated_rating'] = round(approx_rating, 2)
-            aggregated_info['aggregated_answered_reviews_count'] = self._aggregated_data[
-                'total_answered_reviews_count'
-            ]
-            aggregated_info['aggregated_unanswered_reviews_count'] = self._aggregated_data[
-                'total_unanswered_reviews_count'
-            ]
 
+            # Среднее время ответа и процент отвеченных — оставляем по агрегированным данным,
+            # т.к. они считаются честно по карточкам.
             if self._aggregated_data['total_response_time_calculated_count'] > 0:
                 aggregated_info['aggregated_avg_response_time'] = round(
                     self._aggregated_data['total_response_time_sum_days']
@@ -1281,13 +1312,9 @@ class GisParser(BaseParser):
                     2,
                 )
 
-            if self._aggregated_data['total_reviews_count'] > 0:
+            if total_reviews > 0:
                 aggregated_info['aggregated_answered_reviews_percent'] = round(
-                    (
-                        self._aggregated_data['total_answered_reviews_count']
-                        / self._aggregated_data['total_reviews_count']
-                    )
-                    * 100,
+                    (total_answered / total_reviews) * 100,
                     2,
                 )
 
