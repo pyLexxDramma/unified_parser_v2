@@ -41,7 +41,11 @@ templates = Jinja2Templates(directory="src/webapp/templates")
 os.makedirs("src/webapp/static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="src/webapp/static"), name="static")
 
-app.add_middleware(SessionMiddleware, secret_key=secrets.token_urlsafe(32))
+# ВАЖНО: секрет для сессий должен быть стабильным между воркерами/перезапусками,
+# иначе при работе через Docker или несколько процессов сессия «теряется» и
+# check_auth начинает возвращать False (Unauthorized).
+SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY") or "change_me_in_production_session_secret"
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY)
 
 logger = logging.getLogger(__name__)
 

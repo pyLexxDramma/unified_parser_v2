@@ -67,6 +67,11 @@
             {% endif %}
         </div>
         
+        {# 
+        Кнопки управления парсингом (пауза/стоп/возобновление/перезапуск) отключены:
+        оставляем только прогресс-бар и информацию о времени выполнения.
+        Если нужно вернуть управление задачами с UI — раскомментировать блок ниже.
+
         <!-- Кнопки управления (только для активных задач) -->
         {% if task.status == 'RUNNING' or task.status == 'PENDING' %}
         <div class="control-buttons" style="margin-top: 15px; display: flex; gap: 10px;">
@@ -83,6 +88,7 @@
             <button id="btn-restart" class="btn-control btn-restart" onclick="restartParsing('{{ task.task_id }}')" style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">🔄 Перезапустить парсинг</button>
         </div>
         {% endif %}
+        #}
     </header>
 
     <section class="task-meta">
@@ -126,6 +132,8 @@
                 {% if task.status == 'COMPLETED' %}
                     <a href="{{ (url_prefix or '') }}/tasks/{{ task.task_id }}/download-pdf" class="btn-download-pdf" style="padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 5px; font-weight: 600;">📥 Скачать PDF отчет</a>
                 {% endif %}
+                {# Кнопка «Повторить последний парсинг» тоже относится к управлению задачей и скрыта.
+                Если нужно вернуть — раскомментировать блок ниже.
                 {% if task.status == 'COMPLETED' or task.status == 'FAILED' %}
                     <button type="button"
                             onclick="restartParsing('{{ task.task_id }}')"
@@ -134,6 +142,7 @@
                         🔁 Повторить последний парсинг
                     </button>
                 {% endif %}
+                #}
             </div>
         </div>
         {% if statistics %}
