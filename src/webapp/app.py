@@ -985,6 +985,17 @@ async def get_task(request: Request, task_id: str):
 
         cards = task.detailed_results if hasattr(task, 'detailed_results') and task.detailed_results else []
         statistics = task.statistics if hasattr(task, 'statistics') and task.statistics else {}
+
+        # Гарантируем наличие поля "city" у каждой карточки для корректной работы
+        # groupby('city') в шаблоне task_status.html. Без этого при строгих настройках
+        # Jinja возможна ошибка вида "'dict object' has no attribute 'city'".
+        normalized_cards = []
+        for card in cards:
+            if isinstance(card, dict):
+                if "city" not in card or card.get("city") in (None, ""):
+                    card = {**card, "city": "Город не указан"}
+            normalized_cards.append(card)
+        cards = normalized_cards
         output_dir = getattr(settings.app_config.writer, 'output_dir', './output') if hasattr(settings, 'app_config') and hasattr(settings.app_config, 'writer') else './output'
 
         return templates.TemplateResponse(
