@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Web Scraper</title>
-    <link rel="stylesheet" href="{{ (url_prefix or '') }}/static/style.css">
+    <link rel="stylesheet" href="{{ (url_prefix or '') }}/static/style.css?v=2">
 </head>
 <body>
 <div class="container">
@@ -23,14 +23,24 @@
     <form action="{{ (url_prefix or '') }}/start_parsing" method="post" id="parse_form">
         <div class="form-group">
             <label for="company_name">Введите название компании:</label>
-            <input type="text" id="company_name" name="company_name" placeholder="Например: ООО Ромашка" required
+            <input type="text"
+                   id="company_name"
+                   name="company_name"
+                   placeholder="Например: ООО Ромашка"
+                   required
+                   maxlength="200"
                    value="{{ last_form.company_name if last_form and last_form.company_name else '' }}">
         </div>
 
         <div class="form-group">
             <label for="company_site">Введите сайт компании:</label>
-            <input type="url" id="company_site" name="company_site" placeholder="Например: romashka.ru" required
-                   value="{{ last_form.company_site if last_form and last_form.company_site else '' }}">
+            <input type="text"
+                   id="company_site"
+                   name="company_site"
+                   placeholder="Например: romashka.ru"
+                   required
+                   maxlength="200"
+                   value="{{ last_form.company_site if last_form and last_form.company_site else 'http://' }}">
         </div>
 
         <div class="form-group">
@@ -57,7 +67,12 @@
 
         <div class="form-group">
             <label for="email">Ваш email:</label>
-            <input type="email" id="email" name="email" placeholder="например: user@example.com" required
+            <input type="email"
+                   id="email"
+                   name="email"
+                   placeholder="например: user@example.com"
+                   required
+                   maxlength="254"
                    value="{{ last_form.email if last_form and last_form.email else '' }}">
         </div>
 
@@ -102,7 +117,7 @@
                     Добавить
                 </button>
             </div>
-            <div id="cities_container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; margin-top: 4px;">
+            <div id="cities_container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 16px; margin-top: 4px;">
                 <!-- Чекбоксы городов будут подставлены скриптом ниже -->
             </div>
             <!-- Сюда перед отправкой формы будет собираться список выбранных городов -->
@@ -182,7 +197,9 @@
             if (!groupDiv) return;
 
             const label = document.createElement('label');
-            label.style.display = 'block';
+            label.style.display = 'flex';
+            label.style.alignItems = 'flex-start';
+            label.style.gap = '6px';
             label.style.fontSize = '0.85em';
 
             const checkbox = document.createElement('input');
@@ -212,6 +229,8 @@
                 }
                 const data = await resp.json();
 
+                const PLACEHOLDER_CITY = 'Значение отсутствует';
+
                 data.forEach(regionBlock => {
                     const regionName = regionBlock.region;
                     const cities = regionBlock.cities || [];
@@ -230,8 +249,13 @@
                     groupDiv.appendChild(groupTitle);
 
                     cities.forEach(city => {
+                        if (!city || city === PLACEHOLDER_CITY) {
+                            return;
+                        }
                         const label = document.createElement('label');
-                        label.style.display = 'block';
+                        label.style.display = 'flex';
+                        label.style.alignItems = 'flex-start';
+                        label.style.gap = '6px';
                         label.style.fontSize = '0.85em';
                         const checkbox = document.createElement('input');
                         checkbox.type = 'checkbox';
@@ -362,10 +386,51 @@
             const btn = document.getElementById('add_custom_city_btn');
             if (!input || !btn) return;
 
+            const errorId = 'custom_city_error';
+            let errorEl = document.getElementById(errorId);
+            if (!errorEl) {
+                errorEl = document.createElement('div');
+                errorEl.id = errorId;
+                errorEl.style.marginTop = '4px';
+                errorEl.style.fontSize = '0.8em';
+                errorEl.style.color = '#c62828';
+                input.parentElement && input.parentElement.parentElement && input.parentElement.parentElement.appendChild(errorEl);
+            }
+
+            function validateCityName(raw) {
+                const value = (raw || '').trim();
+                if (!value) {
+                    return { ok: false, message: 'Введите название города' };
+                }
+                // Разрешаем только кириллицу, дефис и пробел
+                const cyrillicRe = /^[А-Яа-яЁё\s\-]+$/;
+                if (!cyrillicRe.test(value)) {
+                    return { ok: false, message: 'Город должен быть на кириллице, без цифр и спецсимволов' };
+                }
+                // Минимальная длина
+                if (value.length < 2) {
+                    return { ok: false, message: 'Название города слишком короткое' };
+                }
+                // Максимальная длина
+                if (value.length > 64) {
+                    return { ok: false, message: 'Название города слишком длинное' };
+                }
+                return { ok: true, value };
+            }
+
             function handleAdd() {
-                const value = input.value.trim();
-                if (!value) return;
-                addCustomCityCheckbox(value, {checked: true});
+                const raw = input.value;
+                const res = validateCityName(raw);
+                if (!res.ok) {
+                    if (errorEl) {
+                        errorEl.textContent = res.message;
+                    }
+                    return;
+                }
+                if (errorEl) {
+                    errorEl.textContent = '';
+                }
+                addCustomCityCheckbox(res.value, {checked: true});
                 input.value = '';
                 input.focus();
             }
@@ -380,11 +445,25 @@
         })();
 
         // Перед отправкой формы собираем выбранные города в скрытое поле
-        document.getElementById('parse_form').addEventListener('submit', function () {
+        document.getElementById('parse_form').addEventListener('submit', function (event) {
             const scope = searchScopeSelect.value;
             const hiddenInput = document.getElementById('cities_input');
+
+            // Нормализуем сайт: если без протокола – дописываем http://
+            const siteInput = document.getElementById('company_site');
+            if (siteInput && siteInput.value) {
+                let v = siteInput.value.trim();
+                // Если пользователь ввёл только домен/хост без протокола
+                if (!/^https?:\/\//i.test(v)) {
+                    v = 'http://' + v;
+                }
+                siteInput.value = v;
+            }
+
             if (scope !== 'country') {
-                hiddenInput.value = '';
+                if (hiddenInput) {
+                    hiddenInput.value = '';
+                }
                 return;
             }
             // На всякий случай синхронизируем скрытое поле перед отправкой
@@ -399,7 +478,7 @@
                 const labels = Array.from(document.querySelectorAll('#cities_container label'));
                 labels.forEach(label => {
                     const text = label.textContent.toLowerCase();
-                    label.style.display = !term || text.indexOf(term) !== -1 ? 'block' : 'none';
+                    label.style.display = !term || text.indexOf(term) !== -1 ? 'flex' : 'none';
                 });
 
                 // Если введён текст и остался ровно один видимый город — автоматически отмечаем его

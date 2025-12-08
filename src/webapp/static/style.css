@@ -346,6 +346,34 @@ button[type="submit"]:hover {
     background: linear-gradient(90deg, #4CAF50, #45a049);
 }
 
+/* Выравнивание чекбоксов и названий городов в блоке выбора городов */
+#cities_container label {
+    display: flex !important;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.2;
+}
+
+#cities_container label input[type="checkbox"],
+#cities_container .city-checkbox {
+    width: auto;
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+/* Внутри блока региона выстраиваем города компактным столбцом */
+#cities_container > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+/* Заголовок региона чуть отделяем от списка городов */
+#cities_container > div > div:first-child {
+    margin-bottom: 4px;
+}
+
 @media (max-width: 600px) {
     .card-panel summary {
         flex-direction: column;

@@ -236,9 +236,16 @@ def _generate_gis_url(company_name: str, company_site: str, search_scope: str, l
         return f"https://2gis.ru/search/{encoded_company_name}?search_source=main&company_website={encoded_company_site}"
 
 
+CITY_NAME_RE = re.compile(r"^[А-Яа-яЁё\s\-]+$")
+CITY_PLACEHOLDER = "Значение отсутствует"
+
+
 def _parse_cities(cities_str: str) -> List[str]:
     """
     Преобразует строку с городами (через ; или ,) в список уникальных городов.
+
+    Здесь мы также отбрасываем заведомо «пустые» значения вроде
+    служебного текста «Значение отсутствует».
     """
     if not cities_str:
         return []
@@ -247,10 +254,55 @@ def _parse_cities(cities_str: str) -> List[str]:
     seen = set()
     for part in parts:
         city = part.strip()
-        if city and city not in seen:
+        if not city or city == CITY_PLACEHOLDER:
+            continue
+        if city not in seen:
             cities.append(city)
             seen.add(city)
     return cities
+
+
+def _is_valid_city_name(city: str) -> bool:
+    """
+    Серверная валидация названия города:
+    - только кириллица + пробел + дефис
+    - разумная длина
+    - исключаем placeholder «Значение отсутствует»
+    """
+    city = (city or "").strip()
+    if not city or city == CITY_PLACEHOLDER:
+        return False
+    if len(city) < 2 or len(city) > 64:
+        return False
+    return bool(CITY_NAME_RE.match(city))
+
+
+def _normalize_company_site(raw_site: str) -> str:
+    """
+    Нормализует и валидирует сайт компании.
+    Разрешаем формат без протокола (example.ru) и с протоколом (http(s)://example.ru).
+    Если протокола нет — дописываем http://.
+    При некорректном адресе поднимаем ValueError с человекочитаемым сообщением.
+    """
+    site = (raw_site or "").strip()
+    if not site:
+        raise ValueError("Укажите сайт компании")
+
+    # Если пользователь ввёл только домен/хост без протокола — дописываем http://
+    if not re.match(r"^https?://", site, flags=re.IGNORECASE):
+        site = f"http://{site}"
+
+    parsed = urllib.parse.urlparse(site)
+
+    # Должен быть хостнейм вида example.ru или sub.example.ru
+    if not parsed.netloc or "." not in parsed.netloc:
+        raise ValueError("Некорректный адрес сайта. Пример: example.ru или https://example.ru")
+
+    # Дополнительно исключаем пробелы и явно битые варианты
+    if " " in parsed.netloc:
+        raise ValueError("Адрес сайта не должен содержать пробелы")
+
+    return site
 
 def _run_parser_task(parser_class, url: str, task_id: str, source: str):
     driver = None
@@ -339,8 +391,9 @@ def _run_parser_task(parser_class, url: str, task_id: str, source: str):
 
 @app.post("/start_parsing")
 async def start_parsing(request: Request, form_data: ParsingForm = Depends(ParsingForm.as_form)):
+    url_prefix = get_url_prefix(request)
     if not check_auth(request):
-        return RedirectResponse(url="/login", status_code=302)
+        return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
 
     # Сохраняем последние введённые значения формы в сессии,
     # чтобы при ошибке пользователь не заполнял её заново
@@ -350,7 +403,33 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
         logger.warning(f"Could not store last_form in session: {e}")
 
     if not form_data.company_name or not form_data.company_site or not form_data.source or not form_data.email:
-        return RedirectResponse(url="/?error=Missing+required+fields", status_code=302)
+        return RedirectResponse(
+            url=f"{url_prefix}/?error=" + urllib.parse.quote("Заполните все обязательные поля"),
+            status_code=302,
+        )
+
+    # Дополнительная серверная валидация сайта и списка городов
+    try:
+        # Нормализуем и проверяем сайт компании
+        normalized_site = _normalize_company_site(form_data.company_site)
+        form_data.company_site = normalized_site
+    except ValueError as e:
+        return RedirectResponse(
+            url=f"{url_prefix}/?error=" + urllib.parse.quote(str(e)),
+            status_code=302,
+        )
+
+    # Валидация списка городов (режим "Страна / общий поиск")
+    raw_cities_str = getattr(form_data, "cities", "") or ""
+    if form_data.search_scope == "country" and raw_cities_str:
+        parsed_cities = _parse_cities(raw_cities_str)
+        invalid_cities = [c for c in parsed_cities if not _is_valid_city_name(c)]
+        if invalid_cities:
+            msg = "Некорректные названия городов: " + ", ".join(invalid_cities[:5])
+            return RedirectResponse(
+                url=f"{url_prefix}/?error=" + urllib.parse.quote(msg),
+                status_code=302,
+            )
 
     task_id = create_task(
         email=form_data.email,
