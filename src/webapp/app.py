@@ -277,6 +277,19 @@ def _is_valid_city_name(city: str) -> bool:
     return bool(CITY_NAME_RE.match(city))
 
 
+def _is_valid_email(email: str) -> bool:
+    """
+    Простая проверка email:
+    - есть одна @
+    - после @ есть точка
+    """
+    email = (email or "").strip()
+    if not email:
+        return False
+    # Очень упрощённая, но достаточная валидация
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email))
+
+
 def _normalize_company_site(raw_site: str) -> str:
     """
     Нормализует и валидирует сайт компании.
@@ -303,6 +316,32 @@ def _normalize_company_site(raw_site: str) -> str:
         raise ValueError("Адрес сайта не должен содержать пробелы")
 
     return site
+
+
+def _normalize_company_name(raw_name: str) -> str:
+    """
+    Нормализует название компании:
+    - обрезает пробелы по краям;
+    - добавляет один пробел между ОПФ (ООО, ЗАО, ОАО, ПАО, АО, ИП) и остальной частью, если он отсутствует.
+    """
+    name = (raw_name or "").strip()
+    if not name:
+        return name
+
+    # Поддерживаемые (актуальные) ОПФ; при необходимости список можно расширить
+    opf_list = ("ООО", "ПАО", "АО", "ИП")
+    upper = name.upper()
+
+    for opf in opf_list:
+        if upper.startswith(opf):
+            # Берём «хвост» после ОПФ и убираем из него лишние пробелы слева
+            rest = name[len(opf):].lstrip()
+            if rest:
+                return f"{opf} {rest}"
+            # Если после ОПФ ничего нет, просто возвращаем само ОПФ
+            return opf
+
+    return name
 
 def _run_parser_task(parser_class, url: str, task_id: str, source: str):
     driver = None
@@ -395,6 +434,10 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
     if not check_auth(request):
         return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
 
+    # Нормализуем часть текстовых полей (обрезаем пробелы по краям, приводим формат названия компании)
+    if form_data.company_name:
+        form_data.company_name = _normalize_company_name(form_data.company_name)
+
     # Сохраняем последние введённые значения формы в сессии,
     # чтобы при ошибке пользователь не заполнял её заново
     try:
@@ -402,22 +445,52 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
     except Exception as e:
         logger.warning(f"Could not store last_form in session: {e}")
 
-    if not form_data.company_name or not form_data.company_site or not form_data.source or not form_data.email:
-        return RedirectResponse(
-            url=f"{url_prefix}/?error=" + urllib.parse.quote("Заполните все обязательные поля"),
-            status_code=302,
-        )
+    errors: list[str] = []
 
-    # Дополнительная серверная валидация сайта и списка городов
-    try:
-        # Нормализуем и проверяем сайт компании
-        normalized_site = _normalize_company_site(form_data.company_site)
-        form_data.company_site = normalized_site
-    except ValueError as e:
-        return RedirectResponse(
-            url=f"{url_prefix}/?error=" + urllib.parse.quote(str(e)),
-            status_code=302,
-        )
+    # Базовая проверка заполненности
+    if not form_data.company_name or not form_data.company_site or not form_data.source or not form_data.email:
+        errors.append("Заполните все обязательные поля")
+
+    # Дополнительная проверка: название не должно состоять только из ОПФ
+    only_name_upper = form_data.company_name.strip().upper()
+    # Актуальные ОПФ, которые мы поддерживаем
+    opf_only = {"ООО", "ПАО", "АО", "ИП"}
+    if only_name_upper in opf_only:
+        errors.append("Укажите полное название компании, а не только ОПФ (например: ООО Ромашка)")
+
+    # Проверка: если строка начинается с «похожей на ОПФ» аббревиатуры, но она не из допустимого списка —
+    # считаем это некорректной ОПФ (например: ЧП Сбер, ГК Сервис, ЗАО Сбербанк, ОАО Банк, П.А.О. Сбербанк)
+    first_token = only_name_upper.split()[0] if only_name_upper.split() else ""
+    # Варианты с точками между буквами (П.А.О., О.О.О. и т.п.) считаем некорректной записью ОПФ
+    if re.match(r"^[А-ЯЁ\.]{3,8}$", first_token) and "." in first_token:
+        errors.append("ОПФ указывается без точек: используйте формы ООО, ПАО, АО, ИП")
+    if re.match(r"^[А-ЯЁ]{1,4}$", first_token) and first_token not in opf_only:
+        errors.append("Используйте одну из поддерживаемых ОПФ: ООО, ПАО, АО, ИП")
+
+    # Проверка: обязательно должна быть и ОПФ, и название
+    if not any(only_name_upper.startswith(opf + " ") for opf in opf_only):
+        errors.append("Укажите ОПФ и полное название компании (например: ООО Ромашка)")
+
+    # Проверка: в названии не должно быть латинских букв
+    if re.search(r"[A-Za-z]", form_data.company_name):
+        errors.append("Название компании должно быть полностью на кириллице, без латинских букв (например: ООО Ромашка)")
+
+    # Проверка: в названии не должно быть запрещённых спецсимволов (@, /, \ и т.п.)
+    # Разрешаем: буквы, цифры, пробел, дефис, точку, запятую, кавычки, скобки и №
+    if re.search(r"[^А-Яа-яЁё0-9\s\-\.,«»\"'()№]", form_data.company_name):
+        errors.append("Название компании содержит недопустимые спецсимволы. Уберите символы вроде @, / и другие лишние знаки.")
+
+    # Валидация email
+    if not _is_valid_email(form_data.email):
+        errors.append("Укажите корректный email (например: user@example.com)")
+
+    # Дополнительная серверная валидация сайта
+    if form_data.company_site:
+        try:
+            normalized_site = _normalize_company_site(form_data.company_site)
+            form_data.company_site = normalized_site
+        except ValueError as e:
+            errors.append(str(e))
 
     # Валидация списка городов (режим "Страна / общий поиск")
     raw_cities_str = getattr(form_data, "cities", "") or ""
@@ -426,10 +499,15 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
         invalid_cities = [c for c in parsed_cities if not _is_valid_city_name(c)]
         if invalid_cities:
             msg = "Некорректные названия городов: " + ", ".join(invalid_cities[:5])
-            return RedirectResponse(
-                url=f"{url_prefix}/?error=" + urllib.parse.quote(msg),
-                status_code=302,
-            )
+            errors.append(msg)
+
+    # Если есть ошибки валидации — возвращаем их одним ответом
+    if errors:
+        full_msg = "Исправьте ошибки: " + "; ".join(errors)
+        return RedirectResponse(
+            url=f"{url_prefix}/?error=" + urllib.parse.quote(full_msg),
+            status_code=302,
+        )
 
     task_id = create_task(
         email=form_data.email,

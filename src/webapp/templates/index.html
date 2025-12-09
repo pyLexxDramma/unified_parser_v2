@@ -376,6 +376,27 @@
             }
         }
 
+        // Нормализация названия компании: добавляем пробел после ОПФ (ООО, ПАО, АО, ИП), если его нет
+        function normalizeCompanyName(name) {
+            if (!name) return name;
+            const trimmed = name.trim();
+            if (!trimmed) return trimmed;
+
+            const opfs = ['ООО', 'ПАО', 'АО', 'ИП'];
+            const upper = trimmed.toUpperCase();
+
+            for (const opf of opfs) {
+                if (upper.startsWith(opf)) {
+                    const rest = trimmed.slice(opf.length).trimStart();
+                    if (rest) {
+                        return opf + ' ' + rest;
+                    }
+                    return opf;
+                }
+            }
+            return trimmed;
+        }
+
         searchScopeSelect.addEventListener('change', updateLocationVisibility);
         // Инициализируем видимость при загрузке
         updateLocationVisibility();
@@ -444,10 +465,68 @@
             });
         })();
 
-        // Перед отправкой формы собираем выбранные города в скрытое поле
+        // Перед отправкой формы нормализуем часть полей и собираем выбранные города в скрытое поле
         document.getElementById('parse_form').addEventListener('submit', function (event) {
             const scope = searchScopeSelect.value;
             const hiddenInput = document.getElementById('cities_input');
+
+            const companyNameInput = document.getElementById('company_name');
+            if (companyNameInput && companyNameInput.value) {
+                companyNameInput.value = normalizeCompanyName(companyNameInput.value);
+
+                const opfs = ['ООО', 'ПАО', 'АО', 'ИП'];
+                const upper = companyNameInput.value.trim().toUpperCase();
+
+                // Если строка начинается с «похожей на ОПФ» аббревиатуры, но она не из допустимого списка —
+                // считаем это некорректной ОПФ (например: ЧП Сбер, ГК Сервис, П.А.О. Сбербанк)
+                const firstToken = upper.split(/\s+/)[0] || '';
+                // Варианты с точками между буквами (П.А.О., О.О.О. и т.п.) считаем некорректной записью ОПФ
+                if (/^[А-ЯЁ\.]{3,8}$/.test(firstToken) && firstToken.includes('.')) {
+                    event.preventDefault();
+                    alert('ОПФ указывается без точек: используйте формы ООО, ПАО, АО, ИП');
+                    companyNameInput.focus();
+                    return;
+                }
+                if (/^[А-ЯЁ]{1,4}$/.test(firstToken) && !opfs.includes(firstToken)) {
+                    event.preventDefault();
+                    alert('Используйте одну из поддерживаемых ОПФ: ООО, ПАО, АО, ИП');
+                    companyNameInput.focus();
+                    return;
+                }
+
+                // Проверяем, что пользователь ввёл не только ОПФ
+                if (opfs.includes(upper)) {
+                    event.preventDefault();
+                    alert('Укажите полное название компании, а не только ОПФ (например: ООО Ромашка)');
+                    companyNameInput.focus();
+                    return;
+                }
+
+                // Проверяем, что в названии вообще есть ОПФ
+                if (!opfs.some(opf => upper.startsWith(opf + ' '))) {
+                    event.preventDefault();
+                    alert('Укажите ОПФ и полное название компании (например: ООО Ромашка)');
+                    companyNameInput.focus();
+                    return;
+                }
+
+                // Проверяем, что в названии нет латинских букв
+                if (/[A-Za-z]/.test(companyNameInput.value)) {
+                    event.preventDefault();
+                    alert('Название компании должно быть полностью на кириллице, без латинских букв (например: ООО Ромашка)');
+                    companyNameInput.focus();
+                    return;
+                }
+
+                // Проверяем, что в названии нет запрещённых спецсимволов (@, /, \ и т.п.)
+                // Разрешаем: буквы, цифры, пробел, дефис, точку, запятую, кавычки, скобки и №
+                if (/[^А-Яа-яЁё0-9\s\-\.,«»"'()№]/.test(companyNameInput.value)) {
+                    event.preventDefault();
+                    alert('Название компании содержит недопустимые спецсимволы. Уберите символы вроде @, / и другие лишние знаки.');
+                    companyNameInput.focus();
+                    return;
+                }
+            }
 
             // Нормализуем сайт: если без протокола – дописываем http://
             const siteInput = document.getElementById('company_site');
@@ -495,6 +574,16 @@
                 updateSelectedCitiesSummary();
             });
         }
+
+        // Автоматическая нормализация названия компании при выходе из поля
+        (function initCompanyNameNormalizer() {
+            const companyNameInput = document.getElementById('company_name');
+            if (!companyNameInput) return;
+            companyNameInput.addEventListener('blur', function () {
+                if (!this.value) return;
+                this.value = normalizeCompanyName(this.value);
+            });
+        })();
     </script>
 </div>
 </body>
