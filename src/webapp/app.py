@@ -295,11 +295,21 @@ def _normalize_company_site(raw_site: str) -> str:
     Нормализует и валидирует сайт компании.
     Разрешаем формат без протокола (example.ru) и с протоколом (http(s)://example.ru).
     Если протокола нет — дописываем http://.
+    Если передан полный URL с путём/параметрами/якорем, автоматически обрезаем до origin:
+    scheme + host (например, https://example.com/path?a=1 -> https://example.com).
     При некорректном адресе поднимаем ValueError с человекочитаемым сообщением.
     """
     site = (raw_site or "").strip()
     if not site:
         raise ValueError("Укажите сайт компании")
+
+    # Явно запрещаем protocol-relative URL вида //example.ru
+    if site.startswith("//"):
+        raise ValueError("Укажите сайт в формате example.ru или с протоколом, например: https://example.ru")
+
+    # Запрещаем протоколы, отличные от http/https, в частности ftp://
+    if re.match(r"^ftp://", site, flags=re.IGNORECASE):
+        raise ValueError("Поддерживаются только сайты с протоколом http или https (пример: https://example.ru)")
 
     # Если пользователь ввёл только домен/хост без протокола — дописываем http://
     if not re.match(r"^https?://", site, flags=re.IGNORECASE):
@@ -311,11 +321,36 @@ def _normalize_company_site(raw_site: str) -> str:
     if not parsed.netloc or "." not in parsed.netloc:
         raise ValueError("Некорректный адрес сайта. Пример: example.ru или https://example.ru")
 
+    # Запрещаем указание порта в адресе (например, :8080)
+    if ":" in parsed.netloc:
+        raise ValueError("Адрес сайта не должен содержать номер порта (например, :8080)")
+
     # Дополнительно исключаем пробелы и явно битые варианты
     if " " in parsed.netloc:
         raise ValueError("Адрес сайта не должен содержать пробелы")
 
-    return site
+    # Дополнительно проверяем доменные метки: не должны начинаться или заканчиваться дефисом,
+    # домен верхнего уровня и домен второго уровня не должны быть пустыми
+    host = parsed.hostname or parsed.netloc
+    # Хост не должен заканчиваться точкой (sberbank. — недопустимо)
+    if host.endswith("."):
+        raise ValueError("Укажите корректный домен верхнего уровня (пример: sberbank.ru, example.com)")
+
+    labels = host.split(".")
+    non_empty_labels = [label for label in labels if label]
+    if len(non_empty_labels) < 2:
+        raise ValueError("Адрес сайта должен содержать домен второго уровня (пример: sberbank.ru, example.com)")
+
+    for label in labels:
+        if not label:
+            continue
+        if label.startswith("-") or label.endswith("-"):
+            raise ValueError("Доменное имя не должно начинаться или заканчиваться дефисом (например: -example.ru, example-.ru)")
+
+    # Нормализуем до origin: схема + хост, без путей, параметров и якорей
+    scheme = parsed.scheme or "http"
+    normalized = f"{scheme}://{parsed.netloc}"
+    return normalized
 
 
 def _normalize_company_name(raw_name: str) -> str:
@@ -437,6 +472,10 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
     # Нормализуем часть текстовых полей (обрезаем пробелы по краям, приводим формат названия компании)
     if form_data.company_name:
         form_data.company_name = _normalize_company_name(form_data.company_name)
+    if form_data.company_site:
+        form_data.company_site = form_data.company_site.strip()
+    if form_data.email:
+        form_data.email = form_data.email.strip()
 
     # Сохраняем последние введённые значения формы в сессии,
     # чтобы при ошибке пользователь не заполнял её заново

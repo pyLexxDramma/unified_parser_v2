@@ -528,13 +528,72 @@
                 }
             }
 
-            // Нормализуем сайт: если без протокола – дописываем http://
+            // Нормализуем сайт: если без протокола – дописываем http://, обрезаем путь/параметры/якорь до origin
             const siteInput = document.getElementById('company_site');
             if (siteInput && siteInput.value) {
                 let v = siteInput.value.trim();
+                // Пробелы в адресе недопустимы
+                if (/\s/.test(v)) {
+                    event.preventDefault();
+                    alert('Адрес сайта не должен содержать пробелы');
+                    siteInput.focus();
+                    return;
+                }
+                // Запрещаем протокол ftp://
+                if (/^ftp:\/\//i.test(v)) {
+                    event.preventDefault();
+                    alert('Поддерживаются только сайты с протоколом http или https (пример: https://example.ru)');
+                    siteInput.focus();
+                    return;
+                }
+                // Запрещаем protocol-relative URL вида //example.ru
+                if (v.startsWith('//')) {
+                    event.preventDefault();
+                    alert('Укажите сайт в формате example.ru или с протоколом, например: https://example.ru');
+                    siteInput.focus();
+                    return;
+                }
+                // Проверяем, что доменные метки не начинаются и не заканчиваются дефисом
+                // Берём только часть до первого /, ?, #
+                let domainPart = v.replace(/^https?:\/\//i, '');
+                domainPart = domainPart.split(/[\/?#]/)[0];
+                const host = domainPart; // без порта, так как порты уже запрещены на сервере
+
+                if (host.endsWith('.')) {
+                    event.preventDefault();
+                    alert('Укажите корректный домен верхнего уровня (пример: sberbank.ru, example.com)');
+                    siteInput.focus();
+                    return;
+                }
+
+                const labels = host.split('.');
+                const nonEmptyLabels = labels.filter(l => l);
+                if (nonEmptyLabels.length < 2) {
+                    event.preventDefault();
+                    alert('Адрес сайта должен содержать домен второго уровня (пример: sberbank.ru, example.com)');
+                    siteInput.focus();
+                    return;
+                }
+
+                for (const label of labels) {
+                    if (!label) continue;
+                    if (label.startsWith('-') || label.endsWith('-')) {
+                        event.preventDefault();
+                        alert('Доменное имя не должно начинаться или заканчиваться дефисом (например: -example.ru, example-.ru)');
+                        siteInput.focus();
+                        return;
+                    }
+                }
                 // Если пользователь ввёл только домен/хост без протокола
                 if (!/^https?:\/\//i.test(v)) {
                     v = 'http://' + v;
+                }
+                // Если пользователь ввёл полный URL с путём/параметрами/якорем — обрезаем до origin
+                try {
+                    const urlObj = new URL(v);
+                    v = urlObj.origin;
+                } catch (e) {
+                    // Если URL парсится некорректно, оставляем как есть — серверная валидация покажет ошибку
                 }
                 siteInput.value = v;
             }
@@ -582,6 +641,43 @@
             companyNameInput.addEventListener('blur', function () {
                 if (!this.value) return;
                 this.value = normalizeCompanyName(this.value);
+            });
+        })();
+
+        // Автоматическое обрезание пробелов и нормализация сайта при выходе из поля
+        (function initCompanySiteNormalizer() {
+            const siteInput = document.getElementById('company_site');
+            if (!siteInput) return;
+            // Запрещаем ввод пробела напрямую
+            siteInput.addEventListener('keydown', function (e) {
+                if (e.key === ' ') {
+                    e.preventDefault();
+                }
+            });
+            siteInput.addEventListener('blur', function () {
+                if (!this.value) return;
+                let v = this.value.trim();
+                // Запрещаем протокол ftp://
+                if (/^ftp:\/\//i.test(v)) {
+                    this.value = '';
+                    return;
+                }
+                // Запрещаем protocol-relative URL вида //example.ru
+                if (v.startsWith('//')) {
+                    this.value = '';
+                    return;
+                }
+                if (v && !/^https?:\/\//i.test(v)) {
+                    v = 'http://' + v;
+                }
+                // Если пользователь ввёл полный URL с путём/параметрами/якорем — обрезаем до origin
+                try {
+                    const urlObj = new URL(v);
+                    v = urlObj.origin;
+                } catch (e) {
+                    // Если URL парсится некорректно, оставляем как есть — серверная валидация покажет ошибку
+                }
+                this.value = v;
             });
         })();
     </script>
