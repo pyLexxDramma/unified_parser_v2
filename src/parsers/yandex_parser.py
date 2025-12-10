@@ -1132,6 +1132,146 @@ class YandexParser(BaseParser):
 
         return base or name.strip()
 
+    def _normalize_for_comparison(self, text: str) -> str:
+        """
+        Нормализует текст для сравнения:
+        - приводит к нижнему регистру
+        - убирает лишние пробелы
+        - убирает ОПФ (ООО, ПАО, АО, ИП и т.д.) для более точного сравнения
+        - убирает общие слова, которые могут мешать сравнению
+        """
+        if not text:
+            return ""
+        text = text.lower().strip()
+        text = re.sub(r'\s+', ' ', text)
+        # Убираем ОПФ
+        opf_patterns = [
+            r'^ооо\s+', r'^пао\s+', r'^ао\s+', r'^ип\s+', r'^зао\s+', r'^оао\s+',
+            r'^чп\s+', r'^гк\s+', r'^ичп\s+'
+        ]
+        for pattern in opf_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        # Убираем общие слова, которые могут быть в разных компаниях
+        # Например, "телеком" может быть в разных названиях
+        common_words = ['телеком', 'телекоммуникации', 'связь', 'интернет', 'провайдер']
+        words = text.split()
+        words = [w for w in words if w not in common_words]
+        text = ' '.join(words)
+        return text.strip()
+
+    def _calculate_name_similarity(self, card_name: str, search_name: str) -> float:
+        """
+        Вычисляет оценку схожести названия карточки с поисковым запросом.
+        Возвращает значение от 0.0 до 1.0, где 1.0 - полное совпадение.
+        """
+        if not card_name or not search_name:
+            return 0.0
+        
+        card_normalized = self._normalize_for_comparison(card_name)
+        search_normalized = self._normalize_for_comparison(search_name)
+        
+        if not card_normalized or not search_normalized:
+            return 0.0
+        
+        # Полное совпадение
+        if card_normalized == search_normalized:
+            return 1.0
+        
+        # Одно название содержит другое
+        if search_normalized in card_normalized:
+            # Если поисковый запрос полностью содержится в названии карточки
+            return 0.9
+        if card_normalized in search_normalized:
+            # Если название карточки полностью содержится в поисковом запросе
+            return 0.8
+        
+        # Проверяем совпадение по словам
+        card_words = set(card_normalized.split())
+        search_words = set(search_normalized.split())
+        
+        if not card_words or not search_words:
+            return 0.0
+        
+        # Вычисляем долю совпадающих слов
+        common_words = card_words & search_words
+        if not common_words:
+            return 0.0
+        
+        # Если все слова из поискового запроса есть в названии карточки
+        if search_words.issubset(card_words):
+            return 0.7
+        
+        # Частичное совпадение по словам
+        # Используем более строгую метрику: доля совпадающих слов от минимального количества слов
+        # Это даст большее значение для карточек, где больше слов совпадает
+        similarity = len(common_words) / min(len(card_words), len(search_words))
+        
+        # Дополнительный бонус, если первое слово совпадает (важно для названий компаний)
+        card_first_word = list(card_words)[0] if card_words else ""
+        search_first_word = list(search_words)[0] if search_words else ""
+        if card_first_word and search_first_word and card_first_word == search_first_word:
+            similarity = min(1.0, similarity + 0.15)
+        
+        # Штраф, если в названии карточки есть слова, которых нет в поисковом запросе
+        # (например, "телеком" в "Смарт Телеком" при поиске "Смарт Хоум")
+        card_only_words = card_words - search_words
+        search_only_words = search_words - card_words
+        if card_only_words and search_only_words:
+            # Если есть слова, которые есть только в карточке и только в запросе,
+            # это указывает на разные компании
+            penalty = min(0.3, len(card_only_words) * 0.1)
+            similarity = max(0.0, similarity - penalty)
+        
+        return similarity
+
+    def _filter_cards_by_name(self, cards: List[Dict[str, Any]], search_name: str) -> List[Dict[str, Any]]:
+        """
+        Фильтрует карточки по названию компании, оставляя только те, которые лучше всего совпадают.
+        Если найдено несколько карточек с одинаковым высоким совпадением, возвращает все такие карточки.
+        Если все совпадения низкие, возвращает карточку с наилучшим совпадением.
+        """
+        if not cards or not search_name:
+            return cards
+        
+        # Вычисляем оценку схожести для каждой карточки
+        cards_with_scores = []
+        for card in cards:
+            card_name = card.get('card_name', '')
+            if not card_name:
+                continue
+            similarity = self._calculate_name_similarity(card_name, search_name)
+            cards_with_scores.append((card, similarity, card_name))
+            logger.debug(f"Card '{card_name}' similarity with '{search_name}': {similarity:.2f}")
+        
+        if not cards_with_scores:
+            return cards
+        
+        # Сортируем по убыванию схожести
+        cards_with_scores.sort(key=lambda x: x[1], reverse=True)
+        
+        best_score = cards_with_scores[0][1]
+        best_card_name = cards_with_scores[0][2]
+        logger.info(f"Best name similarity score: {best_score:.2f} for card '{best_card_name}' (search: '{search_name}')")
+        
+        # Если есть несколько карточек, выводим топ-3 для отладки
+        if len(cards_with_scores) > 1:
+            logger.info(f"Top 3 cards by similarity:")
+            for i, (card, score, name) in enumerate(cards_with_scores[:3], 1):
+                logger.info(f"  {i}. '{name}' - {score:.2f}")
+        
+        # Если лучшее совпадение достаточно хорошее (>= 0.6), оставляем только карточки с таким же или близким совпадением
+        # Повысили порог с 0.5 до 0.6 для более строгой фильтрации
+        if best_score >= 0.6:
+            # Оставляем карточки с совпадением >= 0.6 или в пределах 0.15 от лучшего
+            threshold = max(0.6, best_score - 0.15)
+            filtered = [card for card, score, name in cards_with_scores if score >= threshold]
+            logger.info(f"Filtered to {len(filtered)} card(s) with similarity >= {threshold:.2f}")
+            return filtered
+        else:
+            # Если все совпадения низкие, возвращаем только лучшую карточку
+            logger.warning(f"Low name similarity scores (best: {best_score:.2f}). Returning only the best matching card '{best_card_name}'.")
+            return [cards_with_scores[0][0]]
+
     def _scroll_to_load_all_cards(
         self,
         max_scrolls: Optional[int] = None,
@@ -1421,11 +1561,13 @@ class YandexParser(BaseParser):
             
             logger.info(f"Found {len(all_card_urls)} unique card URLs from {len(pages_to_process)} pages")
             
+            # Собираем все карточки с данными
+            all_cards_data = []
             for idx, card_url in enumerate(list(all_card_urls)[:self._max_records]):
                 if self._is_stopped():
                     logger.info(f"Yandex cards: stop flag detected before processing card index {idx}, breaking cards loop")
                     break
-                if len(self._collected_card_data) >= self._max_records:
+                if len(all_cards_data) >= self._max_records:
                     break
                 
                 try:
@@ -1438,11 +1580,21 @@ class YandexParser(BaseParser):
                     card_data = self._extract_card_data_from_detail_page(card_soup)
                     
                     if card_data and card_data.get('card_name'):
-                        self._collected_card_data.append(card_data)
-                        self._update_aggregated_data(card_data)
+                        all_cards_data.append(card_data)
                 except Exception as e:
                     logger.error(f"Error processing card {card_url}: {e}")
                     continue
+            
+            # Фильтруем карточки по названию компании, оставляя только лучшую
+            if all_cards_data and self._search_query_name:
+                filtered_cards = self._filter_cards_by_name(all_cards_data, self._search_query_name)
+                logger.info(f"Filtered {len(all_cards_data)} cards to {len(filtered_cards)} card(s) matching company name '{self._search_query_name}'")
+                all_cards_data = filtered_cards
+            
+            # Добавляем отфильтрованные карточки в коллекцию и обновляем агрегацию
+            for card_data in all_cards_data:
+                self._collected_card_data.append(card_data)
+                self._update_aggregated_data(card_data)
             
             logger.info(f"Parsed {len(self._collected_card_data)} cards")
             return self._collected_card_data
@@ -1479,7 +1631,12 @@ class YandexParser(BaseParser):
 
         total_cards = len(collected_cards_data)
         aggregated_rating = 0.0
-        if total_cards > 0 and self._aggregated_data['total_rating_sum'] > 0:
+        # Считаем рейтинг только по карточкам, у которых есть рейтинг
+        cards_with_rating = sum(1 for card in collected_cards_data if card.get('card_rating') and str(card.get('card_rating', '')).strip())
+        if cards_with_rating > 0 and self._aggregated_data['total_rating_sum'] > 0:
+            aggregated_rating = round(self._aggregated_data['total_rating_sum'] / cards_with_rating, 2)
+        elif total_cards > 0 and self._aggregated_data['total_rating_sum'] > 0:
+            # Если нет карточек с рейтингом, но есть сумма рейтингов, используем общее количество карточек
             aggregated_rating = round(self._aggregated_data['total_rating_sum'] / total_cards, 2)
 
         aggregated_avg_response_time = 0.0

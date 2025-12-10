@@ -1,13 +1,37 @@
 import sys
 import os
+import io
 
+# Устанавливаем переменную окружения для отключения буферизации
 os.environ['PYTHONUNBUFFERED'] = '1'
 
-if hasattr(sys.stdout, 'reconfigure'):
+# Настраиваем кодировку для Windows PowerShell
+if sys.platform == 'win32':
+    # Пытаемся установить UTF-8 для консоли Windows
     try:
-        sys.stdout.reconfigure(line_buffering=True, encoding='utf-8')
-    except:
+        # Для Python 3.7+
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
+        else:
+            # Для старых версий Python
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
         pass
+    
+    try:
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
+        else:
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        pass
+else:
+    # Для Linux/Mac
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(line_buffering=True, encoding='utf-8')
+        except:
+            pass
 
 if __name__ == "__main__":
     import uvicorn

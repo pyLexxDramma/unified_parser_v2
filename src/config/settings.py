@@ -217,15 +217,34 @@ try:
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level_int)
     root_logger.handlers.clear()
+    import re
+    
     class FlushingStreamHandler(logging.StreamHandler):
+        # Регулярное выражение для удаления ANSI escape-кодов
+        ANSI_ESCAPE_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        
+        def __init__(self, stream=None):
+            super().__init__(stream)
+            # Убеждаемся, что поток настроен правильно
+            if stream and hasattr(stream, 'reconfigure'):
+                try:
+                    stream.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
+                except:
+                    pass
+        
         def emit(self, record):
-            super().emit(record)
-            # Принудительно сбрасываем буфер после каждого сообщения
-            if hasattr(self.stream, 'flush'):
-                self.stream.flush()
-            # Также сбрасываем stderr на случай, если что-то идет туда
-            if hasattr(sys.stderr, 'flush'):
-                sys.stderr.flush()
+            try:
+                # Форматируем сообщение
+                msg = self.format(record)
+                # Удаляем все ANSI escape-коды для совместимости с Windows PowerShell
+                msg = self.ANSI_ESCAPE_RE.sub('', msg)
+                # Записываем в поток
+                stream = self.stream
+                stream.write(msg + self.terminator)
+                # Принудительно сбрасываем буфер после каждого сообщения
+                self.flush()
+            except Exception:
+                self.handleError(record)
     
     console_handler = FlushingStreamHandler(sys.stdout)
     console_handler.setLevel(log_level_int)
@@ -235,14 +254,14 @@ try:
     # Настраиваем буферизацию для немедленного вывода
     if hasattr(console_handler.stream, 'reconfigure'):
         try:
-            console_handler.stream.reconfigure(line_buffering=True, encoding='utf-8')
+            console_handler.stream.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
         except:
             pass
     
     # Убеждаемся, что stderr тоже не буферизуется
     if hasattr(sys.stderr, 'reconfigure'):
         try:
-            sys.stderr.reconfigure(line_buffering=True, encoding='utf-8')
+            sys.stderr.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
         except:
             pass
     

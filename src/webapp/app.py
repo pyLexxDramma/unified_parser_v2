@@ -227,11 +227,23 @@ def _generate_yandex_url(company_name: str, search_scope: str, location: str) ->
         return f"https://yandex.ru/maps/?text={full_search_text}&mode=search&z=3"
 
 def _generate_gis_url(company_name: str, company_site: str, search_scope: str, location: str) -> str:
+    """
+    Генерирует URL для поиска в 2ГИС.
+    
+    Для режима "city" использует формат поиска с городом в запросе:
+    https://2gis.ru/search/{company_name}+{city}?search_source=main&company_website={company_site}
+    
+    Это позволяет 2ГИС самому определить правильный городской сегмент (spb, msk и т.д.)
+    вместо попытки угадать код города из полного названия.
+    """
     encoded_company_name = urllib.parse.quote(company_name, safe='')
     encoded_company_site = urllib.parse.quote(company_site, safe='')
     if search_scope == "city" and location:
-        encoded_location = urllib.parse.quote(location, safe='')
-        return f"https://2gis.ru/{encoded_location}/search/{encoded_company_name}?search_source=main&company_website={encoded_company_site}"
+        # Добавляем город в поисковый запрос, а не в путь URL
+        # Это позволяет 2ГИС корректно определить город и вернуть результаты
+        search_query = f"{company_name} {location}"
+        encoded_search_query = urllib.parse.quote(search_query, safe='')
+        return f"https://2gis.ru/search/{encoded_search_query}?search_source=main&company_website={encoded_company_site}"
     else:
         return f"https://2gis.ru/search/{encoded_company_name}?search_source=main&company_website={encoded_company_site}"
 
@@ -490,25 +502,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
     if not form_data.company_name or not form_data.company_site or not form_data.source or not form_data.email:
         errors.append("Заполните все обязательные поля")
 
-    # Дополнительная проверка: название не должно состоять только из ОПФ
-    only_name_upper = form_data.company_name.strip().upper()
-    # Актуальные ОПФ, которые мы поддерживаем
-    opf_only = {"ООО", "ПАО", "АО", "ИП"}
-    if only_name_upper in opf_only:
-        errors.append("Укажите полное название компании, а не только ОПФ (например: ООО Ромашка)")
-
-    # Проверка: если строка начинается с «похожей на ОПФ» аббревиатуры, но она не из допустимого списка —
-    # считаем это некорректной ОПФ (например: ЧП Сбер, ГК Сервис, ЗАО Сбербанк, ОАО Банк, П.А.О. Сбербанк)
-    first_token = only_name_upper.split()[0] if only_name_upper.split() else ""
-    # Варианты с точками между буквами (П.А.О., О.О.О. и т.п.) считаем некорректной записью ОПФ
-    if re.match(r"^[А-ЯЁ\.]{3,8}$", first_token) and "." in first_token:
-        errors.append("ОПФ указывается без точек: используйте формы ООО, ПАО, АО, ИП")
-    if re.match(r"^[А-ЯЁ]{1,4}$", first_token) and first_token not in opf_only:
-        errors.append("Используйте одну из поддерживаемых ОПФ: ООО, ПАО, АО, ИП")
-
-    # Проверка: обязательно должна быть и ОПФ, и название
-    if not any(only_name_upper.startswith(opf + " ") for opf in opf_only):
-        errors.append("Укажите ОПФ и полное название компании (например: ООО Ромашка)")
+    # ОПФ не обязателен - пользователь может ввести любое название компании
 
     # Проверка: в названии не должно быть латинских букв
     if re.search(r"[A-Za-z]", form_data.company_name):

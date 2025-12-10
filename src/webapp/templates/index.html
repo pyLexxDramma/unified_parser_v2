@@ -474,41 +474,7 @@
             if (companyNameInput && companyNameInput.value) {
                 companyNameInput.value = normalizeCompanyName(companyNameInput.value);
 
-                const opfs = ['ООО', 'ПАО', 'АО', 'ИП'];
-                const upper = companyNameInput.value.trim().toUpperCase();
-
-                // Если строка начинается с «похожей на ОПФ» аббревиатуры, но она не из допустимого списка —
-                // считаем это некорректной ОПФ (например: ЧП Сбер, ГК Сервис, П.А.О. Сбербанк)
-                const firstToken = upper.split(/\s+/)[0] || '';
-                // Варианты с точками между буквами (П.А.О., О.О.О. и т.п.) считаем некорректной записью ОПФ
-                if (/^[А-ЯЁ\.]{3,8}$/.test(firstToken) && firstToken.includes('.')) {
-                    event.preventDefault();
-                    alert('ОПФ указывается без точек: используйте формы ООО, ПАО, АО, ИП');
-                    companyNameInput.focus();
-                    return;
-                }
-                if (/^[А-ЯЁ]{1,4}$/.test(firstToken) && !opfs.includes(firstToken)) {
-                    event.preventDefault();
-                    alert('Используйте одну из поддерживаемых ОПФ: ООО, ПАО, АО, ИП');
-                    companyNameInput.focus();
-                    return;
-                }
-
-                // Проверяем, что пользователь ввёл не только ОПФ
-                if (opfs.includes(upper)) {
-                    event.preventDefault();
-                    alert('Укажите полное название компании, а не только ОПФ (например: ООО Ромашка)');
-                    companyNameInput.focus();
-                    return;
-                }
-
-                // Проверяем, что в названии вообще есть ОПФ
-                if (!opfs.some(opf => upper.startsWith(opf + ' '))) {
-                    event.preventDefault();
-                    alert('Укажите ОПФ и полное название компании (например: ООО Ромашка)');
-                    companyNameInput.focus();
-                    return;
-                }
+                // ОПФ не обязателен - пользователь может ввести любое название компании
 
                 // Проверяем, что в названии нет латинских букв
                 if (/[A-Za-z]/.test(companyNameInput.value)) {
