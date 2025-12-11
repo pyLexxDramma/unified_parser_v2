@@ -83,10 +83,20 @@ class CSVWriter(FileWriter):
                 # Для сложных структур используем JSON с правильной кодировкой
                 import json
                 try:
+                    # Для списков отзывов логируем количество элементов
+                    if field == 'detailed_reviews' and isinstance(value, list):
+                        logger.debug(f"Serializing {len(value)} reviews to JSON for field '{field}'")
                     value = json.dumps(value, ensure_ascii=False)
+                    # Проверяем размер JSON-строки (CSV может иметь ограничения)
+                    if len(value) > 1000000:  # Если больше 1MB, логируем предупреждение
+                        logger.warning(f"Large JSON value for field '{field}': {len(value)} characters")
                 except Exception as e:
-                    logger.warning(f"Error serializing {type(value)} for field {field}: {e}")
-                    value = str(value)
+                    logger.error(f"Error serializing {type(value)} for field {field}: {e}", exc_info=True)
+                    # В случае ошибки пытаемся сохранить хотя бы количество элементов
+                    if isinstance(value, list):
+                        value = f"[Error serializing {len(value)} items: {str(e)}]"
+                    else:
+                        value = str(value)
             elif value is None:
                 value = ''
             else:

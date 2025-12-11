@@ -814,7 +814,10 @@ class YandexParser(BaseParser):
         all_reviews = []
         pages_to_process = [current_url] if current_url and '/reviews/' in current_url else []
         if all_pages_urls:
-            pages_to_process.extend(sorted(all_pages_urls)[:10])
+            # Увеличиваем количество обрабатываемых страниц пагинации
+            sorted_pages = sorted(all_pages_urls)
+            pages_to_process.extend(sorted_pages[:50])  # Увеличено с 10 до 50
+            logger.info(f"Found {len(all_pages_urls)} pagination pages for Yandex reviews, will process up to 50 pages")
         
         if not pages_to_process and current_url:
             pages_to_process = [current_url]
@@ -829,7 +832,35 @@ class YandexParser(BaseParser):
                 if page_url != current_url:
                     logger.info(f"Processing reviews page: {page_url}")
                     self.driver.navigate(page_url)
-                    time.sleep(2)
+                    time.sleep(3)  # Увеличено до 3 сек для загрузки страницы
+                    
+                    # Прокручиваем страницу для загрузки всех отзывов на этой странице
+                    logger.info(f"Scrolling Yandex reviews page {page_url} to load all reviews...")
+                    scroll_iterations = 0
+                    max_scroll_iterations = 50
+                    last_review_count = 0
+                    no_change_count = 0
+                    
+                    while scroll_iterations < max_scroll_iterations:
+                        page_source_temp, soup_temp = self._get_page_source_and_soup()
+                        current_review_count = len(soup_temp.select('li.business-review-view, div.business-review-view, div.review-item-view'))
+                        
+                        if current_review_count > last_review_count:
+                            last_review_count = current_review_count
+                            no_change_count = 0
+                            logger.debug(f"Yandex page {page_url}: found {current_review_count} reviews after scroll iteration {scroll_iterations + 1}")
+                        else:
+                            no_change_count += 1
+                            if no_change_count >= 5:  # Останавливаемся, если 5 итераций без изменений
+                                logger.debug(f"Yandex page {page_url}: review count stable at {current_review_count}, stopping scroll")
+                                break
+                        
+                        # Прокручиваем страницу
+                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                        time.sleep(1.5)  # Ждем загрузки новых отзывов
+                        scroll_iterations += 1
+                    
+                    logger.info(f"Yandex page {page_url}: scroll completed, found {last_review_count} reviews")
 
                 # Перед парсингом отзывов разворачиваем все ответы организации,
                 # чтобы в DOM появились блоки с текстом и датой ответа.
@@ -1096,6 +1127,34 @@ class YandexParser(BaseParser):
                         continue
                     seen_review_keys.add(review_key)
                     
+                    # Проверяем, является ли это ответом компании (а не отзывом пользователя)
+                    # Добавляем ту же логику фильтрации, что и в 2ГИС
+                    is_company_response = False
+                    if review_text:
+                        review_text_lower = review_text.lower()
+                        review_start = review_text_lower[:200].strip()
+                        
+                        # Проверяем характерные фразы ответов компании
+                        if review_start.startswith('спасибо за ваш отзыв') or review_start.startswith('благодарим вас за'):
+                            is_company_response = True
+                        elif review_start.startswith('спасибо за ваш') and ('положительный' in review_start[:60] or 'отрицательный' in review_start[:60] or 'отзыв' in review_start[:60]):
+                            is_company_response = True
+                        elif review_start.startswith('благодарим вас') or review_start.startswith('благодарим за'):
+                            is_company_response = True
+                        elif review_start.startswith('благодарим') and len(review_text_lower) < 100:
+                            is_company_response = True
+                        # Проверяем "Добрый день" / "Здравствуйте" в начале + характерные слова компании
+                        elif (review_start.startswith('добрый день') or review_start.startswith('здравствуйте')) and any(word in review_start[:150] for word in ['наша', 'поддержка', 'обращайтесь', 'рады', 'стараемся', 'команда', 'техническая']):
+                            is_company_response = True
+                        # Проверяем фразы, которые точно указывают на ответ компании
+                        elif any(phrase in review_start[:100] for phrase in ['наша техническая поддержка', 'обращайтесь по телефону', 'наша команда', 'мы рады', 'мы стараемся', 'напишите на', 'позвоните по']):
+                            is_company_response = True
+                    
+                    # Если это ответ компании, пропускаем его
+                    if is_company_response:
+                        logger.debug(f"Found Yandex company response (not a user review): author={author_name}, text_preview={review_text[:50] if review_text else 'N/A'}")
+                        continue
+                    
                     if review_text or rating_value > 0:
                         all_reviews.append({
                             'review_rating': rating_value,
@@ -1128,10 +1187,13 @@ class YandexParser(BaseParser):
                             elif rating_value == 3:
                                 reviews_info['neutral_reviews'] += 1
             except Exception as page_error:
-                logger.warning(f"Error processing reviews page {page_url}: {page_error}", exc_info=True)
+                logger.error(f"Error processing Yandex reviews page {page_url}: {page_error}", exc_info=True)
+                # Сохраняем частичные результаты даже при ошибке
+                logger.info(f"Continuing with partial results: {len(all_reviews)} reviews collected so far")
                 continue
         
-        reviews_info['details'] = all_reviews[:500]
+        # Сохраняем все отзывы без ограничения (было [:500])
+        reviews_info['details'] = all_reviews
         reviews_info['reviews_count'] = len(all_reviews) if all_reviews else reviews_count_total
         return reviews_info
 
@@ -1536,7 +1598,10 @@ class YandexParser(BaseParser):
             all_card_urls = set()
             pages_to_process = [search_query_url]
             if all_pages_urls:
-                pages_to_process.extend(sorted(all_pages_urls)[:20])
+                # Увеличиваем количество обрабатываемых страниц пагинации
+                sorted_pages = sorted(all_pages_urls)
+                pages_to_process.extend(sorted_pages[:50])  # Увеличено с 20 до 50
+                logger.info(f"Found {len(all_pages_urls)} pagination pages for Yandex cards, will process up to 50 pages")
             
             for page_num, page_url in enumerate(pages_to_process, start=1):
                 if self._is_stopped():
@@ -1587,7 +1652,9 @@ class YandexParser(BaseParser):
                         logger.info(f"Reached max records limit ({self._max_records}). Stopping pagination.")
                         break
                 except Exception as page_error:
-                    logger.warning(f"Error processing search page {page_url}: {page_error}", exc_info=True)
+                    logger.error(f"Error processing Yandex search page {page_url}: {page_error}", exc_info=True)
+                    # Сохраняем частичные результаты даже при ошибке
+                    logger.info(f"Continuing with partial results: {len(all_card_urls)} cards collected so far")
                     continue
             
             if not all_card_urls:
