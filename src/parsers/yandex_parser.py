@@ -498,7 +498,9 @@ class YandexParser(BaseParser):
             details = reviews_data.get('details', [])
 
             # Базовые счётчики по отзывам
-            card_snippet['card_reviews_count'] = reviews_data.get('reviews_count', 0)
+            # Используем фактическое количество найденных отзывов (details), а не значение из snippet
+            actual_reviews_count = len(details) if details else reviews_data.get('reviews_count', 0)
+            card_snippet['card_reviews_count'] = actual_reviews_count
             card_snippet['card_reviews_positive'] = reviews_data.get('positive_reviews', 0)
             card_snippet['card_reviews_negative'] = reviews_data.get('negative_reviews', 0)
             card_snippet['card_reviews_neutral'] = reviews_data.get('neutral_reviews', 0)
@@ -926,7 +928,9 @@ class YandexParser(BaseParser):
                         stars = review_elem.select(
                             '[class*="star"][class*="active"], '
                             '[class*="star"][class*="fill"], '
-                            '[aria-label*="звезд"], [aria-label*="звезды"]'
+                            '[class*="star"][class*="filled"], '
+                            '[aria-label*="звезд"], [aria-label*="звезды"], '
+                            '[data-rating], [data-score]'
                         )
                         if stars:
                             active_count = len(
@@ -935,11 +939,42 @@ class YandexParser(BaseParser):
                                     for s in stars
                                     if 'active' in str(s.get('class', []))
                                     or 'fill' in str(s.get('class', []))
+                                    or 'filled' in str(s.get('class', []))
                                     or 'full' in str(s.get('class', []))
                                 ]
                             )
                             if active_count > 0:
                                 rating_value = float(active_count)
+                    
+                    # 2.5) Пытаемся извлечь рейтинг из data-атрибутов
+                    if not rating_value:
+                        rating_attr = review_elem.get('data-rating') or review_elem.get('data-score')
+                        if rating_attr:
+                            try:
+                                rating_value = float(rating_attr)
+                                if 1 <= rating_value <= 5:
+                                    pass  # Используем найденное значение
+                                else:
+                                    rating_value = 0.0
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    # 2.6) Пытаемся найти заполненные SVG звезды (fill="#ffb81c" или похожие)
+                    if not rating_value:
+                        svg_stars = review_elem.select('svg[class*="star"], svg path[fill*="#ff"], svg path[fill*="#FF"]')
+                        if svg_stars:
+                            filled_count = 0
+                            for svg in svg_stars:
+                                # Проверяем fill атрибут в path внутри svg
+                                paths = svg.select('path[fill]')
+                                for path in paths:
+                                    fill_attr = path.get('fill', '').lower()
+                                    # Золотой/желтый цвет обычно означает заполненную звезду
+                                    if '#ff' in fill_attr or '#fdb' in fill_attr or '#fc' in fill_attr:
+                                        filled_count += 1
+                                        break
+                            if 1 <= filled_count <= 5:
+                                rating_value = float(filled_count)
 
                     # 3) Фолбэк: ищем паттерн "N из 5" или "N/5" в общем тексте отзыва
                     if not rating_value:
@@ -1011,7 +1046,7 @@ class YandexParser(BaseParser):
                         cleaned_text = ' '.join(cleaned_text.split())
                         cleaned_text = cleaned_text.strip()
                         if len(cleaned_text) > 20:
-                            review_text = cleaned_text[:1000]
+                            review_text = cleaned_text  # Убрано ограничение в 1000 символов для полного текста отзыва
 
                     # Убираем чисто служебные тексты вида "Подписаться", "Полезно?" и т.п.
                     if review_text:

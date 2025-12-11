@@ -243,12 +243,24 @@ class PDFWriter:
                         review_text += f"Автор: {review.get('review_author')}<br/>"
                     if review.get('review_rating'):
                         review_text += f"Рейтинг: {'⭐' * int(review.get('review_rating', 0))} ({review.get('review_rating')})<br/>"
+                    elif review.get('review_text'):  # Если нет рейтинга, но есть текст, показываем "Рейтинг не указан"
+                        review_text += f"Рейтинг: не указан<br/>"
                     if review.get('review_date'):
                         review_text += f"Дата: {review.get('review_date')}<br/>"
                     if review.get('review_text'):
-                        review_text += f"Текст: {review.get('review_text')[:200]}{'...' if len(review.get('review_text', '')) > 200 else ''}"
+                        # Показываем полный текст отзыва без обрезки
+                        review_text += f"Текст: {review.get('review_text')}"
 
                     self.story.append(Paragraph(review_text, self.styles['CustomBody']))
+                    
+                    # Добавляем ответ организации, если он есть
+                    if review.get('has_response') and review.get('response_text'):
+                        response_text = f"<b>Ответ организации:</b><br/>"
+                        if review.get('response_date'):
+                            response_text += f"Дата ответа: {review.get('response_date')}<br/>"
+                        response_text += f"{review.get('response_text')}"
+                        self.story.append(Paragraph(response_text, self.styles['CustomBody']))
+                    
                     self.story.append(Spacer(1, 0.2*cm))
 
                 if len(reviews) > 10:

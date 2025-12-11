@@ -455,6 +455,129 @@ class GisParser(BaseParser):
             logger.warning(f"Error finding pagination button: {e}")
             return False
 
+    def _normalize_for_comparison(self, text: str) -> str:
+        """
+        Нормализует текст для сравнения:
+        - приводит к нижнему регистру
+        - убирает лишние пробелы
+        - убирает ОПФ (ООО, ПАО, АО, ИП и т.д.) для более точного сравнения
+        - убирает общие слова, которые могут мешать сравнению
+        """
+        if not text:
+            return ""
+        text = text.lower().strip()
+        text = re.sub(r'\s+', ' ', text)
+        # Убираем ОПФ
+        opf_patterns = [
+            r'^ооо\s+', r'^пао\s+', r'^ао\s+', r'^ип\s+', r'^зао\s+', r'^оао\s+',
+            r'^чп\s+', r'^гк\s+', r'^ичп\s+'
+        ]
+        for pattern in opf_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        # Убираем общие слова, которые могут быть в разных компаниях
+        common_words = ['телеком', 'телекоммуникации', 'связь', 'интернет', 'провайдер']
+        words = text.split()
+        words = [w for w in words if w not in common_words]
+        text = ' '.join(words)
+        return text.strip()
+
+    def _calculate_name_similarity(self, card_name: str, search_name: str) -> float:
+        """
+        Вычисляет оценку схожести названия карточки с поисковым запросом.
+        Возвращает значение от 0.0 до 1.0, где 1.0 - полное совпадение.
+        """
+        if not card_name or not search_name:
+            return 0.0
+        
+        card_normalized = self._normalize_for_comparison(card_name)
+        search_normalized = self._normalize_for_comparison(search_name)
+        
+        if not card_normalized or not search_normalized:
+            return 0.0
+        
+        # Полное совпадение
+        if card_normalized == search_normalized:
+            return 1.0
+        
+        # Одно название содержит другое
+        if search_normalized in card_normalized:
+            return 0.9
+        if card_normalized in search_normalized:
+            return 0.8
+        
+        # Проверяем совпадение по словам
+        card_words = set(card_normalized.split())
+        search_words = set(search_normalized.split())
+        
+        if not card_words or not search_words:
+            return 0.0
+        
+        # Вычисляем долю совпадающих слов
+        common_words = card_words & search_words
+        if not common_words:
+            return 0.0
+        
+        # Если все слова из поискового запроса есть в названии карточки
+        if search_words.issubset(card_words):
+            return 0.7
+        
+        # Частичное совпадение по словам
+        similarity = len(common_words) / min(len(card_words), len(search_words))
+        
+        # Дополнительный бонус, если первое слово совпадает
+        card_first_word = list(card_words)[0] if card_words else ""
+        search_first_word = list(search_words)[0] if search_words else ""
+        if card_first_word and search_first_word and card_first_word == search_first_word:
+            similarity = min(1.0, similarity + 0.15)
+        
+        # Штраф, если в названии карточки есть слова, которых нет в поисковом запросе
+        card_only_words = card_words - search_words
+        search_only_words = search_words - card_words
+        if card_only_words and search_only_words:
+            penalty = min(0.3, len(card_only_words) * 0.1)
+            similarity = max(0.0, similarity - penalty)
+        
+        return similarity
+
+    def _filter_cards_by_name(self, cards: List[Dict[str, Any]], search_name: str) -> List[Dict[str, Any]]:
+        """
+        Фильтрует карточки по названию компании, оставляя только те, которые лучше всего совпадают.
+        Если найдено несколько карточек с одинаковым высоким совпадением, возвращает все такие карточки.
+        Если все совпадения низкие, возвращает карточку с наилучшим совпадением.
+        """
+        if not cards or not search_name:
+            return cards
+        
+        # Вычисляем оценку схожести для каждой карточки
+        cards_with_scores = []
+        for card in cards:
+            card_name = card.get('card_name', '')
+            if not card_name:
+                continue
+            similarity = self._calculate_name_similarity(card_name, search_name)
+            cards_with_scores.append((card, similarity, card_name))
+            logger.debug(f"2GIS card '{card_name}' similarity with '{search_name}': {similarity:.2f}")
+        
+        if not cards_with_scores:
+            return cards
+        
+        # Сортируем по убыванию схожести
+        cards_with_scores.sort(key=lambda x: x[1], reverse=True)
+        
+        best_score = cards_with_scores[0][1]
+        best_card_name = cards_with_scores[0][2]
+        logger.info(f"2GIS best name similarity score: {best_score:.2f} for card '{best_card_name}' (search: '{search_name}')")
+        
+        # Оставляем карточки с оценкой >= 0.6 или в пределах 0.1 от лучшей оценки
+        threshold = max(0.6, best_score - 0.1)
+        filtered = [card for card, score, _ in cards_with_scores if score >= threshold]
+        
+        if not filtered:
+            # Если ничего не прошло порог, возвращаем хотя бы лучшую карточку
+            filtered = [cards_with_scores[0][0]]
+        
+        return filtered
+
     def _get_card_reviews_info_2gis(self, card_url: str) -> Dict[str, Any]:
         """
         Получение информации об отзывах по карточке 2GIS.
@@ -1520,10 +1643,28 @@ class GisParser(BaseParser):
 
         card_data_list: List[Dict[str, Any]] = []
 
-        search_query_name = (
-            url.split('/search/')[1].split('?')[0].replace('+', ' ').replace('%20', ' ')
-            if '/search/' in url else "2gisSearch"
-        )
+        # Извлекаем название компании из URL
+        # Формат URL: https://2gis.ru/search/{encoded_company_name}%20{encoded_location}
+        search_query_name = "2gisSearch"
+        try:
+            if '/search/' in url:
+                # Берем часть после /search/ и до первого ? или конца
+                search_part = url.split('/search/')[1].split('?')[0]
+                # Декодируем URL-кодирование
+                search_part = urllib.parse.unquote(search_part)
+                # Убираем город из запроса, если он есть (обычно в конце через пробел или %20)
+                # Оставляем только название компании (первая часть до последнего пробела, если есть город)
+                parts = search_part.split()
+                # Если есть несколько частей, берем все кроме последней (которая может быть городом)
+                # Но если частей мало (1-2), берем все
+                if len(parts) > 2:
+                    # Вероятно, последняя часть - это город, убираем её
+                    search_query_name = ' '.join(parts[:-1])
+                else:
+                    search_query_name = search_part
+        except Exception as e:
+            logger.warning(f"Could not extract company name from 2GIS URL: {e}")
+            search_query_name = "2gisSearch"
 
         aggregated_info: Dict[str, Any] = {
             'search_query_name': search_query_name,
@@ -1746,7 +1887,6 @@ class GisParser(BaseParser):
                     }
 
                     card_data_list.append(card_data)
-                    self._update_aggregated_data(card_data)
 
                     if len(card_data_list) >= self._max_records:
                         break
@@ -1755,10 +1895,34 @@ class GisParser(BaseParser):
                     logger.error(f"Error processing card {card_url}: {e}", exc_info=True)
                     continue
 
+            # Фильтруем карточки по названию компании перед агрегацией
+            if card_data_list and search_query_name and search_query_name != "2gisSearch":
+                filtered_cards = self._filter_cards_by_name(card_data_list, search_query_name)
+                logger.info(f"Filtered {len(card_data_list)} 2GIS cards to {len(filtered_cards)} card(s) matching company name '{search_query_name}'")
+                card_data_list = filtered_cards
+
+            # Обновляем агрегированные данные только для отфильтрованных карточек
+            self._aggregated_data = {
+                'total_cards': 0,
+                'total_rating_sum': 0.0,
+                'total_reviews_count': 0,
+                'total_positive_reviews': 0,
+                'total_negative_reviews': 0,
+                'total_answered_count': 0,
+                'total_answered_reviews_count': 0,
+                'total_unanswered_reviews_count': 0,
+                'total_response_time_sum_days': 0.0,
+                'total_response_time_calculated_count': 0,
+            }
+            for card_data in card_data_list:
+                self._update_aggregated_data(card_data)
+
             # Заполняем агрегированную статистику для 2ГИС на основе уже собранных карточек.
             # ВАЖНО: здесь мы считаем агрегаты как «сумму по карточкам», чтобы цифры
             # в верхнем блоке (Всего отзывов / Негативных / Позитивных) совпадали
             # с тем, что пользователь видит в списке карточек.
+            logger.info(f"Starting aggregation for {len(card_data_list)} 2GIS cards...")
+            aggregation_start_time = time.time()
             total_cards = len(card_data_list)
             aggregated_info['total_cards_found'] = total_cards
 
@@ -1828,8 +1992,12 @@ class GisParser(BaseParser):
                 )
             else:
                 # Если нет данных из агрегации, пробуем взять из данных отзывов
+                logger.info("Calculating average response time from detailed reviews (fallback method)...")
                 response_times = []
-                for card in card_data_list:
+                total_reviews_processed = 0
+                for card_idx, card in enumerate(card_data_list, 1):
+                    if card_idx % 10 == 0:
+                        logger.debug(f"Processing response times: card {card_idx}/{len(card_data_list)}")
                     reviews_data = card.get('detailed_reviews', [])
                     if isinstance(reviews_data, str):
                         try:
@@ -1837,23 +2005,30 @@ class GisParser(BaseParser):
                             reviews_data = json.loads(reviews_data)
                         except:
                             reviews_data = []
-                    for review in reviews_data:
-                        if isinstance(review, dict) and review.get('has_response') and review.get('review_date') and review.get('response_date'):
-                            try:
-                                from datetime import datetime
-                                from src.parsers.date_parser import parse_russian_date
-                                review_date = parse_russian_date(review['review_date'])
-                                response_date = parse_russian_date(review['response_date'])
-                                if review_date and response_date:
-                                    delta = (response_date - review_date).days
-                                    if delta >= 0:
-                                        response_times.append(delta)
-                            except Exception:
-                                pass
+                    if not isinstance(reviews_data, list):
+                        continue
+                    total_reviews_processed += len(reviews_data)
+                    # Ограничиваем количество обрабатываемых отзывов для ускорения (берем первые 100 отзывов с ответами)
+                    reviews_with_response = [r for r in reviews_data if isinstance(r, dict) and r.get('has_response') and r.get('review_date') and r.get('response_date')]
+                    for review in reviews_with_response[:100]:  # Ограничиваем до 100 отзывов на карточку
+                        try:
+                            from datetime import datetime
+                            from src.parsers.date_parser import parse_russian_date
+                            review_date = parse_russian_date(review['review_date'])
+                            response_date = parse_russian_date(review['response_date'])
+                            if review_date and response_date:
+                                delta = (response_date - review_date).days
+                                if delta >= 0:
+                                    response_times.append(delta)
+                        except Exception:
+                            pass
+                logger.info(f"Processed {total_reviews_processed} reviews, found {len(response_times)} response time entries")
                 if response_times:
                     aggregated_info['aggregated_avg_response_time'] = round(sum(response_times) / len(response_times), 2)
+                    logger.info(f"Calculated average response time: {aggregated_info['aggregated_avg_response_time']} days")
                 else:
                     aggregated_info['aggregated_avg_response_time'] = 0.0
+                    logger.info("No response time data found in detailed reviews")
 
             if total_reviews > 0:
                 aggregated_info['aggregated_answered_reviews_percent'] = round(
@@ -1861,6 +2036,8 @@ class GisParser(BaseParser):
                     2,
                 )
 
+            aggregation_time = time.time() - aggregation_start_time
+            logger.info(f"Aggregation completed in {aggregation_time:.2f} seconds for {len(card_data_list)} cards")
             self._update_progress(f"Агрегация результатов: найдено {len(card_data_list)} карточек")
 
             logger.info(f"Parsed {len(card_data_list)} cards from 2GIS")
