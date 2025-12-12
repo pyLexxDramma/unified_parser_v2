@@ -96,7 +96,7 @@ class CSVWriter(FileWriter):
                     if isinstance(value, list):
                         value = f"[Error serializing {len(value)} items: {str(e)}]"
                     else:
-                        value = str(value)
+                    value = str(value)
             elif value is None:
                 value = ''
             else:

@@ -27,11 +27,11 @@ if sys.platform == 'win32':
         pass
 else:
     # Для Linux/Mac
-    if hasattr(sys.stdout, 'reconfigure'):
-        try:
-            sys.stdout.reconfigure(line_buffering=True, encoding='utf-8')
-        except:
-            pass
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(line_buffering=True, encoding='utf-8')
+    except:
+        pass
 
 if __name__ == "__main__":
     import uvicorn

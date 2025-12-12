@@ -390,7 +390,7 @@ def _normalize_company_name(raw_name: str) -> str:
 
     return name
 
-def _run_parser_task(parser_class, url: str, task_id: str, source: str):
+def _run_parser_task(parser_class, url: str, task_id: str, source: str, company_site: Optional[str] = None):
     driver = None
     try:
         logger.info(f"Task {task_id} ({source}): Starting parser task for URL: {url}")
@@ -439,8 +439,10 @@ def _run_parser_task(parser_class, url: str, task_id: str, source: str):
             logger.debug("Could not set stop_check_callback on parser instance")
 
         logger.info(f"Task {task_id} ({source}): Starting parse for URL: {url}")
+        if company_site:
+            logger.info(f"Task {task_id} ({source}): Target website for filtering: {company_site}")
         try:
-            result = parser.parse(url=url)
+            result = parser.parse(url=url, search_query_site=company_site)
         except Exception as parse_error:
             logger.error(f"Task {task_id} ({source}): Parse failed: {parse_error}", exc_info=True)
             update_task_status(task_id, "FAILED", f"{source}: Ошибка парсинга: {str(parse_error)}", error=str(parse_error))
@@ -504,13 +506,9 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
 
     # ОПФ не обязателен - пользователь может ввести любое название компании
 
-    # Проверка: в названии не должно быть латинских букв
-    if re.search(r"[A-Za-z]", form_data.company_name):
-        errors.append("Название компании должно быть полностью на кириллице, без латинских букв (например: ООО Ромашка)")
-
     # Проверка: в названии не должно быть запрещённых спецсимволов (@, /, \ и т.п.)
-    # Разрешаем: буквы, цифры, пробел, дефис, точку, запятую, кавычки, скобки и №
-    if re.search(r"[^А-Яа-яЁё0-9\s\-\.,«»\"'()№]", form_data.company_name):
+    # Разрешаем: буквы (кириллица и латиница), цифры, пробел, дефис, точку, запятую, кавычки, скобки и №
+    if re.search(r"[^А-Яа-яЁёA-Za-z0-9\s\-\.,«»\"'()№]", form_data.company_name):
         errors.append("Название компании содержит недопустимые спецсимволы. Уберите символы вроде @, / и другие лишние знаки.")
 
     # Валидация email
@@ -571,56 +569,62 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                 yandex_error = None
                 gis_error = None
 
-                # Если передан список городов, запускаем парсинг поочерёдно по каждому городу
+                # ОПТИМИЗАЦИЯ: Если передан список городов, сначала собираем все карточки по всем городам для каждого источника,
+                # затем фильтруем, затем парсим отзывы. Это избегает повторных поисков и фильтраций.
                 if cities_list:
-                    yandex_stats_list: List[Dict[str, Any]] = []
-                    gis_stats_list: List[Dict[str, Any]] = []
-
+                    # Сначала Yandex: собираем все карточки по всем городам
+                    update_task_status(task_id, "RUNNING", f"Yandex: Поиск карточек по {len(cities_list)} городам...")
+                    logger.info(f"Task {task_id}: Starting Yandex parser for {len(cities_list)} cities (optimized mode)...")
+                    
+                    yandex_all_cards = []
+                    yandex_stats_list = []
                     for city in cities_list:
-                        # Позволяем пользователю остановить задачу посреди обхода городов
                         if is_task_stopped(task_id):
-                            logger.info(f"Task {task_id}: stop flag detected before processing city '{city}', breaking city loop (both sources)")
+                            logger.info(f"Task {task_id}: stop flag detected before Yandex city '{city}', breaking city loop")
                             break
-                        # Yandex
                         yandex_url = _generate_yandex_url(form_data.company_name, "city", city)
-                        update_task_status(task_id, "RUNNING", f"Yandex: Парсинг города {city}...")
-                        logger.info(f"Task {task_id}: Starting Yandex parser for city {city}...")
-                        yandex_result, yandex_error = _run_parser_task(YandexParser, yandex_url, task_id, "Yandex")
-
+                        logger.info(f"Task {task_id}: Collecting Yandex cards for city {city}...")
+                        yandex_result, yandex_error = _run_parser_task(YandexParser, yandex_url, task_id, "Yandex", company_site=form_data.company_site)
                         if yandex_result:
                             cards = yandex_result.get("cards_data", [])
                             for card in cards:
                                 card["source"] = "yandex"
                                 card["city"] = city
-                            all_cards.extend(cards)
-
+                            yandex_all_cards.extend(cards)
                             if yandex_result.get("aggregated_info"):
                                 yandex_stats_list.append(yandex_result["aggregated_info"])
-
-                        # 2GIS
-                        if is_task_stopped(task_id):
-                            logger.info(f"Task {task_id}: stop flag detected after Yandex for city '{city}', skipping 2GIS and remaining cities (both sources)")
-                            break
-
-                        gis_url = _generate_gis_url(
-                            form_data.company_name,
-                            form_data.company_site,
-                            "city",
-                            city,
-                        )
-                        update_task_status(task_id, "RUNNING", f"2GIS: Парсинг города {city}...")
-                        logger.info(f"Task {task_id}: Starting 2GIS parser for city {city}...")
-                        gis_result, gis_error = _run_parser_task(GisParser, gis_url, task_id, "2GIS")
-
-                        if gis_result:
-                            cards = gis_result.get("cards_data", [])
-                            for card in cards:
-                                card["source"] = "2gis"
-                                card["city"] = city
-                            all_cards.extend(cards)
-
-                            if gis_result.get("aggregated_info"):
-                                gis_stats_list.append(gis_result["aggregated_info"])
+                    
+                    # Затем 2GIS: собираем все карточки по всем городам
+                    if not is_task_stopped(task_id):
+                        update_task_status(task_id, "RUNNING", f"2GIS: Поиск карточек по {len(cities_list)} городам...")
+                        logger.info(f"Task {task_id}: Starting 2GIS parser for {len(cities_list)} cities (optimized mode)...")
+                        
+                        gis_all_cards = []
+                        gis_stats_list = []
+                        for city in cities_list:
+                            if is_task_stopped(task_id):
+                                logger.info(f"Task {task_id}: stop flag detected before 2GIS city '{city}', breaking city loop")
+                                break
+                            gis_url = _generate_gis_url(
+                                form_data.company_name,
+                                form_data.company_site,
+                                "city",
+                                city,
+                            )
+                            logger.info(f"Task {task_id}: Collecting 2GIS cards for city {city}...")
+                            gis_result, gis_error = _run_parser_task(GisParser, gis_url, task_id, "2GIS", company_site=form_data.company_site)
+                            if gis_result:
+                                cards = gis_result.get("cards_data", [])
+                                for card in cards:
+                                    card["source"] = "2gis"
+                                    card["city"] = city
+                                gis_all_cards.extend(cards)
+                                if gis_result.get("aggregated_info"):
+                                    gis_stats_list.append(gis_result["aggregated_info"])
+                        
+                        # Объединяем все карточки
+                        all_cards.extend(yandex_all_cards)
+                        all_cards.extend(gis_all_cards)
 
                     # Формируем агрегированную статистику по каждому источнику на основе списка городов
                     def _combine_stats(stats_list: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -699,7 +703,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                         f"Task {task_id}: Starting Yandex parser first (sequential execution)..."
                     )
                     yandex_result, yandex_error = _run_parser_task(
-                        YandexParser, yandex_url, task_id, "Yandex"
+                        YandexParser, yandex_url, task_id, "Yandex", company_site=form_data.company_site
                     )
 
                     if is_task_stopped(task_id):
@@ -711,7 +715,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                             f"Task {task_id}: Starting 2GIS parser after Yandex (sequential execution)..."
                         )
                         gis_result, gis_error = _run_parser_task(
-                            GisParser, gis_url, task_id, "2GIS"
+                            GisParser, gis_url, task_id, "2GIS", company_site=form_data.company_site
                         )
 
                     # Собираем детальные карточки по обоим источникам
@@ -832,7 +836,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                         url = _generate_yandex_url(form_data.company_name, "city", city)
                         update_task_status(task_id, "RUNNING", f"Yandex: Парсинг города {city}...")
                         logger.info(f"Task {task_id}: Starting Yandex parser for city {city} (single source)...")
-                        result, error = _run_parser_task(YandexParser, url, task_id, "Yandex")
+                        result, error = _run_parser_task(YandexParser, url, task_id, "Yandex", company_site=form_data.company_site)
 
                         if result and result.get("cards_data"):
                             for card in result["cards_data"]:
@@ -931,7 +935,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                     url = _generate_yandex_url(
                         form_data.company_name, form_data.search_scope, form_data.location
                     )
-                    result, error = _run_parser_task(YandexParser, url, task_id, "Yandex")
+                    result, error = _run_parser_task(YandexParser, url, task_id, "Yandex", company_site=form_data.company_site)
 
                     if error:
                         update_task_status(task_id, "FAILED", f"Ошибка: {error}", error=error)
@@ -986,7 +990,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                         )
                         update_task_status(task_id, "RUNNING", f"2GIS: Парсинг города {city}...")
                         logger.info(f"Task {task_id}: Starting 2GIS parser for city {city} (single source)...")
-                        result, error = _run_parser_task(GisParser, url, task_id, "2GIS")
+                        result, error = _run_parser_task(GisParser, url, task_id, "2GIS", company_site=form_data.company_site)
 
                         if result and result.get("cards_data"):
                             for card in result["cards_data"]:
@@ -1085,7 +1089,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                         form_data.search_scope,
                         form_data.location,
                     )
-                    result, error = _run_parser_task(GisParser, url, task_id, "2GIS")
+                    result, error = _run_parser_task(GisParser, url, task_id, "2GIS", company_site=form_data.company_site)
 
                     if error:
                         update_task_status(task_id, "FAILED", f"Ошибка: {error}", error=error)
@@ -1451,7 +1455,7 @@ async def api_restart_task(request: Request, task_id: str):
                 all_cards: List[Dict[str, Any]] = []
                 statistics: Dict[str, Any] = {}
 
-                yandex_result, yandex_error = _run_parser_task(YandexParser, yandex_url, new_task_id, "Yandex")
+                yandex_result, yandex_error = _run_parser_task(YandexParser, yandex_url, new_task_id, "Yandex", company_site=cloned_form.company_site)
                 if yandex_result:
                     cards = yandex_result.get("cards_data", [])
                     for card in cards:
@@ -1460,7 +1464,7 @@ async def api_restart_task(request: Request, task_id: str):
                     if yandex_result.get("aggregated_info"):
                         statistics["yandex"] = yandex_result["aggregated_info"]
 
-                gis_result, gis_error = _run_parser_task(GisParser, gis_url, new_task_id, "2GIS")
+                gis_result, gis_error = _run_parser_task(GisParser, gis_url, new_task_id, "2GIS", company_site=cloned_form.company_site)
                 if gis_result:
                     cards = gis_result.get("cards_data", [])
                     for card in cards:
@@ -1504,7 +1508,7 @@ async def api_restart_task(request: Request, task_id: str):
                     )
                     parser_class = GisParser
 
-                result, error = _run_parser_task(parser_class, url, new_task_id, source_name)
+                result, error = _run_parser_task(parser_class, url, new_task_id, source_name, company_site=cloned_form.company_site)
 
                 if result and isinstance(result, dict):
                     cards = result.get("cards_data", [])

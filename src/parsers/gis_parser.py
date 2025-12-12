@@ -6,6 +6,7 @@ import time
 import urllib.parse
 import hashlib
 import os
+import base64
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
@@ -22,6 +23,7 @@ class GisParser(BaseParser):
     def __init__(self, driver: BaseDriver, settings: Settings):
         super().__init__(driver, settings)
         self._url: str = ""
+        self._target_website: Optional[str] = None  # Целевой сайт для фильтрации
 
         self._scroll_step: int = getattr(self._settings.parser, 'gis_scroll_step', 500)
         self._scroll_max_iter: int = getattr(self._settings.parser, 'gis_scroll_max_iter', 100)
@@ -1728,9 +1730,163 @@ class GisParser(BaseParser):
                 exc_info=True
             )
 
-    def parse(self, url: str) -> Dict[str, Any]:
+    def _website_matches(self, card_website: str, target_website: str) -> bool:
+        """
+        Проверяет, соответствует ли сайт карточки целевому сайту.
+        Нормализует оба URL для сравнения (убирает протокол, www, trailing slash).
+        """
+        if not card_website or not target_website:
+            return False
+        
+        def normalize_url(url: str) -> str:
+            """Нормализует URL для сравнения"""
+            url = url.strip().lower()
+            # Убираем протокол
+            url = re.sub(r'^https?://', '', url)
+            # Убираем www.
+            url = re.sub(r'^www\.', '', url)
+            # Убираем trailing slash
+            url = url.rstrip('/')
+            # Убираем путь и параметры (оставляем только домен)
+            url = url.split('/')[0]
+            url = url.split('?')[0]
+            return url
+        
+        normalized_card = normalize_url(card_website)
+        normalized_target = normalize_url(target_website)
+        
+        return normalized_card == normalized_target
+
+    def _quick_extract_website(self, card_url: str) -> str:
+        """
+        Быстро извлекает только сайт из карточки без полного парсинга.
+        Используется для ранней фильтрации карточек по сайту.
+        Обрабатывает ссылки через link.2gis.ru, извлекая реальный URL.
+        """
+        original_url = self.driver.get_current_url()
+        try:
+            self.driver.navigate(card_url)
+            time.sleep(1)  # Короткая задержка для загрузки минимального контента
+            page_source, soup = self._get_page_source_and_soup()
+            
+            def extract_url_from_link_2gis(href: str) -> Optional[str]:
+                """Извлекает реальный URL из ссылки через link.2gis.ru"""
+                if not href or 'link.2gis.ru' not in href.lower():
+                    return None
+                try:
+                    # Пытаемся найти URL в параметрах или декодировать base64
+                    # Сначала ищем в query параметрах
+                    parsed = urllib.parse.urlparse(href)
+                    # Проверяем, есть ли URL в конце пути (после последнего /)
+                    path_parts = parsed.path.split('/')
+                    if len(path_parts) > 0:
+                        last_part = path_parts[-1]
+                        # Пытаемся декодировать base64
+                        try:
+                            import base64
+                            decoded = base64.urlsafe_b64decode(last_part + '==')
+                            decoded_str = decoded.decode('utf-8', errors='ignore')
+                            # Ищем URL в декодированной строке
+                            url_match = re.search(r'https?://[^\s"\'<>]+', decoded_str)
+                            if url_match:
+                                return url_match.group(0)
+                        except:
+                            pass
+                    # Если не получилось, ищем в query параметрах
+                    query_params = urllib.parse.parse_qs(parsed.query)
+                    for key, values in query_params.items():
+                        for value in values:
+                            if 'http://' in value or 'https://' in value:
+                                url_match = re.search(r'https?://[^\s"\'<>]+', value)
+                                if url_match:
+                                    return url_match.group(0)
+                except Exception as e:
+                    logger.debug(f"Error extracting URL from link.2gis.ru: {e}")
+                return None
+            
+            website = ""
+            # Сначала ищем прямые ссылки (не через link.2gis.ru)
+            # Исключаем служебные домены 2ГИС и других сервисов
+            excluded_domains = [
+                '2gis.ru', '2gis.', 'yandex.ru', 'maps.yandex', 'link.2gis', 'redirect.2gis',
+                'account.2gis.com', 'hh.ru', 'otello.ru', '2gis.am', '2gis.kz', '2gis.kg', '2gis.ae',
+                'vk.com', 't.me', 'facebook.com', 'instagram.com', 'twitter.com'
+            ]
+            website_selectors = [
+                'a[href^="http"]',
+                'a[data-qa-id="website"]',
+                'a[class*="website"]',
+                'a[class*="site"]',
+                'a[itemprop="url"]',
+            ]
+            for selector in website_selectors:
+                website_elems = soup.select(selector)
+                for website_elem in website_elems:
+                    href = website_elem.get('href', '')
+                    if not href:
+                        continue
+                    # Проверяем, что это не служебная ссылка
+                    href_lower = href.lower()
+                    is_excluded = any(domain in href_lower for domain in excluded_domains)
+                    if not is_excluded:
+                        website = href
+                        logger.info(f"Found direct website link: {website}")
+                        break
+                if website:
+                    break
+            
+            # Если не нашли прямую ссылку, ищем через link.2gis.ru
+            if not website:
+                link_2gis_elems = soup.select('a[href*="link.2gis.ru"]')
+                logger.info(f"Found {len(link_2gis_elems)} link.2gis.ru elements, checking for website...")
+                for elem in link_2gis_elems:
+                    href = elem.get('href', '')
+                    link_text = elem.get_text(strip=True)
+                    logger.info(f"Checking link.2gis.ru element: text='{link_text[:50]}', href='{href[:100]}'")
+                    
+                    if href:
+                        # Сначала проверяем текст ссылки - там часто указан домен
+                        if link_text and '.' in link_text and len(link_text) < 100:
+                            # Проверяем, похоже ли это на домен (не служебный)
+                            if re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-\.]*\.[a-zA-Z]{2,}$', link_text):
+                                # Исключаем служебные домены
+                                if not any(domain in link_text.lower() for domain in excluded_domains):
+                                    website = f"http://{link_text}"
+                                    logger.info(f"Extracted URL from link text: {website}")
+                                    break
+                        
+                        # Пытаемся извлечь реальный URL из href
+                        extracted_url = extract_url_from_link_2gis(href)
+                        if extracted_url:
+                            # Проверяем, что это не служебный домен
+                            if not any(domain in extracted_url.lower() for domain in excluded_domains):
+                                website = extracted_url
+                                logger.info(f"Extracted URL from link.2gis.ru href: {extracted_url}")
+                                break
+            
+            if website:
+                # Нормализуем URL (убираем протокол для сравнения, но возвращаем с протоколом)
+                if not website.startswith('http://') and not website.startswith('https://'):
+                    website = f"http://{website}"
+                logger.info(f"Extracted website from {card_url}: {website}")
+            else:
+                logger.info(f"No website found for {card_url}")
+            
+            return website
+        except Exception as e:
+            logger.warning(f"Error during quick website extraction for {card_url}: {e}")
+            return ""
+        finally:
+            # Возвращаемся на предыдущую страницу, чтобы не нарушать основной цикл
+            self.driver.navigate(original_url)
+            time.sleep(1)
+
+    def parse(self, url: str, search_query_site: Optional[str] = None) -> Dict[str, Any]:
         logger.info(f"Starting 2GIS parser for URL: {url}")
         self._url = url
+        self._target_website = search_query_site  # Сохраняем целевой сайт для фильтрации
+        if self._target_website:
+            logger.info(f"Target website for filtering: {self._target_website}")
 
         self._update_progress("Инициализация парсера 2GIS...")
 
@@ -1866,7 +2022,35 @@ class GisParser(BaseParser):
                     'aggregated_info': aggregated_info,
                 }
 
-            self._update_progress(f"Сканирование карточек: 0/{len(card_urls)}")
+            # ОПТИМИЗАЦИЯ: Ранняя фильтрация по сайту (если указан целевой сайт)
+            # Сохраняем извлеченные сайты для переиспользования при полном парсинге
+            card_url_to_website: Dict[str, str] = {}
+            filtered_card_urls = card_urls
+            if self._target_website:
+                logger.info(f"Применяю раннюю фильтрацию по сайту: {self._target_website}")
+                logger.info(f"Быстрая проверка сайтов для {len(filtered_card_urls)} карточек...")
+                original_count = len(filtered_card_urls)
+                matching_urls = []
+                
+                for idx, card_url in enumerate(filtered_card_urls[:self._max_records], 1):
+                    if self._is_stopped():
+                        break
+                    if idx % 10 == 0:
+                        self._update_progress(f"Проверка сайтов: {idx}/{min(len(filtered_card_urls), self._max_records)}")
+                    
+                    website = self._quick_extract_website(card_url)
+                    # Сохраняем извлеченный сайт для переиспользования
+                    card_url_to_website[card_url] = website
+                    if self._website_matches(website, self._target_website):
+                        matching_urls.append(card_url)
+                        logger.info(f"Карточка {idx} прошла фильтр по сайту: {card_url} -> {website}")
+                    else:
+                        logger.info(f"Карточка {idx} исключена (сайт не совпадает): {card_url} -> {website or '(нет сайта)'}")
+                
+                filtered_card_urls = matching_urls
+                logger.info(f"Ранняя фильтрация завершена: {original_count} -> {len(filtered_card_urls)} карточек (осталось {len(filtered_card_urls)} для полного парсинга)")
+
+            self._update_progress(f"Сканирование карточек: 0/{len(filtered_card_urls)}")
 
             name_selectors = [
                 'h1[class*="title"]',
@@ -1894,7 +2078,7 @@ class GisParser(BaseParser):
                 '[class*="phone"]',
             ]
 
-            for idx, card_url in enumerate(card_urls[: self._max_records], start=1):
+            for idx, card_url in enumerate(filtered_card_urls[: self._max_records], start=1):
                 if self._is_stopped():
                     logger.info(f"2GIS: stop flag detected before processing card {idx}, breaking cards loop")
                     break
@@ -1968,6 +2152,21 @@ class GisParser(BaseParser):
                             if phone:
                                 break
 
+                    # Сайт (используем предварительно извлеченный, если есть)
+                    website = card_url_to_website.get(card_url, "")
+                    if not website:
+                        # Если сайт не был извлечен при ранней фильтрации, используем тот же метод
+                        website = self._quick_extract_website(card_url)
+                        # Сохраняем для возможного переиспользования
+                        if website:
+                            card_url_to_website[card_url] = website
+                    
+                    if website:
+                        if card_url_to_website.get(card_url):
+                            logger.debug(f"Использован предварительно извлеченный сайт для карточки '{name}': {website}")
+                        else:
+                            logger.debug(f"Извлечен сайт из 2GIS карточки '{name}': {website}")
+
                     reviews_data = self._get_card_reviews_info_2gis(card_url)
 
                     if not name:
@@ -1984,7 +2183,7 @@ class GisParser(BaseParser):
                         'card_address': address,
                         'card_rating': rating,
                         'card_reviews_count': actual_reviews_count,
-                        'card_website': "",
+                        'card_website': website,
                         'card_phone': phone,
                         'card_rubrics': "",
                         'card_response_status': "UNKNOWN",

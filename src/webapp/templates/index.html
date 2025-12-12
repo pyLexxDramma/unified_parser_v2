@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Web Scraper</title>
-    <link rel="stylesheet" href="{{ (url_prefix or '') }}/static/style.css?v=2">
+    <link rel="stylesheet" href="{{ (url_prefix or '') }}/static/style.css?v=3">
 </head>
 <body>
 <div class="container">
@@ -476,17 +476,9 @@
 
                 // ОПФ не обязателен - пользователь может ввести любое название компании
 
-                // Проверяем, что в названии нет латинских букв
-                if (/[A-Za-z]/.test(companyNameInput.value)) {
-                    event.preventDefault();
-                    alert('Название компании должно быть полностью на кириллице, без латинских букв (например: ООО Ромашка)');
-                    companyNameInput.focus();
-                    return;
-                }
-
                 // Проверяем, что в названии нет запрещённых спецсимволов (@, /, \ и т.п.)
-                // Разрешаем: буквы, цифры, пробел, дефис, точку, запятую, кавычки, скобки и №
-                if (/[^А-Яа-яЁё0-9\s\-\.,«»"'()№]/.test(companyNameInput.value)) {
+                // Разрешаем: буквы (кириллица и латиница), цифры, пробел, дефис, точку, запятую, кавычки, скобки и №
+                if (/[^А-Яа-яЁёA-Za-z0-9\s\-\.,«»"'()№]/.test(companyNameInput.value)) {
                     event.preventDefault();
                     alert('Название компании содержит недопустимые спецсимволы. Уберите символы вроде @, / и другие лишние знаки.');
                     companyNameInput.focus();

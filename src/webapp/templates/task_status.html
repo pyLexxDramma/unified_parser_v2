@@ -36,6 +36,59 @@
             </div>
         </div>
         
+        <!-- Отдельные прогресс-бары для каждого этапа -->
+        <div class="progress-stages-container" id="progress-stages-container" style="margin-top: 20px; {% if task.status == 'RUNNING' or task.status == 'PENDING' %}display: block;{% else %}display: none;{% endif %}">
+            <h3 style="margin-bottom: 15px; font-size: 1.1em; color: #333;">Этапы парсинга:</h3>
+            
+            <!-- Этап 1: Поиск карточек -->
+            <div class="progress-stage" id="stage-search" style="margin-bottom: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <span style="font-weight: 600; color: #555; font-size: 0.9em;">1. Поиск карточек</span>
+                    <span class="stage-percent" id="stage-search-percent" style="font-size: 0.85em; color: #888;">—</span>
+                </div>
+                <div class="stage-progress-bar" style="position: relative; width: 100%; background-color: #e0e0e0; border-radius: 6px; overflow: hidden; height: 20px;">
+                    <div class="stage-progress-fill" id="stage-search-fill" style="height: 100%; background: linear-gradient(90deg, #2196F3 0%, #42A5F5 100%); width: 0%; transition: width 0.3s ease;"></div>
+                </div>
+                <div class="stage-status" id="stage-search-status" style="font-size: 0.8em; color: #666; margin-top: 3px; min-height: 1.2em;">Ожидание...</div>
+            </div>
+            
+            <!-- Этап 2: Ранняя фильтрация по сайту -->
+            <div class="progress-stage" id="stage-filter" style="margin-bottom: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <span style="font-weight: 600; color: #555; font-size: 0.9em;">2. Фильтрация по сайту</span>
+                    <span class="stage-percent" id="stage-filter-percent" style="font-size: 0.85em; color: #888;">—</span>
+                </div>
+                <div class="stage-progress-bar" style="position: relative; width: 100%; background-color: #e0e0e0; border-radius: 6px; overflow: hidden; height: 20px;">
+                    <div class="stage-progress-fill" id="stage-filter-fill" style="height: 100%; background: linear-gradient(90deg, #FF9800 0%, #FFB74D 100%); width: 0%; transition: width 0.3s ease;"></div>
+                </div>
+                <div class="stage-status" id="stage-filter-status" style="font-size: 0.8em; color: #666; margin-top: 3px; min-height: 1.2em;">Ожидание...</div>
+            </div>
+            
+            <!-- Этап 3: Полный парсинг карточек -->
+            <div class="progress-stage" id="stage-parse" style="margin-bottom: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <span style="font-weight: 600; color: #555; font-size: 0.9em;">3. Парсинг карточек</span>
+                    <span class="stage-percent" id="stage-parse-percent" style="font-size: 0.85em; color: #888;">—</span>
+                </div>
+                <div class="stage-progress-bar" style="position: relative; width: 100%; background-color: #e0e0e0; border-radius: 6px; overflow: hidden; height: 20px;">
+                    <div class="stage-progress-fill" id="stage-parse-fill" style="height: 100%; background: linear-gradient(90deg, #9C27B0 0%, #BA68C8 100%); width: 0%; transition: width 0.3s ease;"></div>
+                </div>
+                <div class="stage-status" id="stage-parse-status" style="font-size: 0.8em; color: #666; margin-top: 3px; min-height: 1.2em;">Ожидание...</div>
+            </div>
+            
+            <!-- Этап 4: Парсинг отзывов -->
+            <div class="progress-stage" id="stage-reviews" style="margin-bottom: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <span style="font-weight: 600; color: #555; font-size: 0.9em;">4. Парсинг отзывов</span>
+                    <span class="stage-percent" id="stage-reviews-percent" style="font-size: 0.85em; color: #888;">—</span>
+                </div>
+                <div class="stage-progress-bar" style="position: relative; width: 100%; background-color: #e0e0e0; border-radius: 6px; overflow: hidden; height: 20px;">
+                    <div class="stage-progress-fill" id="stage-reviews-fill" style="height: 100%; background: linear-gradient(90deg, #4CAF50 0%, #8BC34A 100%); width: 0%; transition: width 0.3s ease;"></div>
+                </div>
+                <div class="stage-status" id="stage-reviews-status" style="font-size: 0.8em; color: #666; margin-top: 3px; min-height: 1.2em;">Ожидание...</div>
+            </div>
+        </div>
+        
         <!-- Время парсинга -->
         <div class="time-info" style="margin-top: 15px; padding: 10px; background: #f5f5f5; border-radius: 5px; font-size: 0.9em;">
             {% if task.start_time %}
@@ -793,33 +846,17 @@
     
     
     // Инициализация прогресс-бара при загрузке страницы
+    // Функция updateProgressStages определена в task_status.js
     (function() {
         const progressText = '{{ task.progress or "" }}';
         if (progressText) {
-            // Используем функцию из task_status.js если она доступна
-            if (typeof updateProgressStages === 'function') {
-                updateProgressStages(progressText);
-            } else {
-                // Или обновляем вручную
-                const progressStatusText = document.getElementById('progress-status-text');
-                const progressBarFill = document.getElementById('progress-bar-fill');
-                if (progressStatusText) {
-                    progressStatusText.textContent = progressText;
+            // Функция updateProgressStages будет доступна после загрузки task_status.js
+            // Вызываем её через небольшую задержку, чтобы убедиться, что скрипт загружен
+            setTimeout(() => {
+                if (typeof updateProgressStages === 'function') {
+                    updateProgressStages(progressText);
                 }
-                // Простая оценка прогресса
-                let progressPercent = 0;
-                if (progressText.includes('завершена') || progressText.includes('completed')) {
-                    progressPercent = 100;
-                } else if (progressText.includes('Сканирование') || progressText.includes('Scanning')) {
-                    progressPercent = 66;
-                } else if (progressText.includes('Поиск') || progressText.includes('Searching') || progressText.includes('Инициализация')) {
-                    progressPercent = 33;
-                }
-                if (progressBarFill) {
-                    progressBarFill.style.width = `${progressPercent}%`;
-                    progressBarFill.textContent = progressPercent > 0 ? `${progressPercent}%` : '';
-                }
-            }
+            }, 100);
         }
     })();
     

@@ -28,6 +28,8 @@ class YandexParser(BaseParser):
 
         super().__init__(driver, settings)
         self._url: str = ""
+        self._target_website: Optional[str] = None  # Целевой сайт для фильтрации
+        self._target_website: Optional[str] = None  # Целевой сайт для фильтрации
 
         self._captcha_wait_time: int = getattr(self._settings.parser, 'yandex_captcha_wait', 20)
         self._reviews_scroll_step: int = getattr(self._settings.parser, 'yandex_reviews_scroll_step', 500)
@@ -288,7 +290,7 @@ class YandexParser(BaseParser):
             logger.error(f"Error processing Yandex card snippet: {e}")
             return None
 
-    def _extract_card_data_from_detail_page(self, card_details_soup: BeautifulSoup) -> Optional[Dict[str, Any]]:
+    def _extract_card_data_from_detail_page(self, card_details_soup: BeautifulSoup, pre_extracted_website: Optional[str] = None) -> Optional[Dict[str, Any]]:
         try:
             card_snippet = {
                 'card_name': '',
@@ -382,8 +384,32 @@ class YandexParser(BaseParser):
             if not card_snippet.get('card_rating'):
                 card_snippet['card_rating'] = ''
 
-            website_detail = card_details_soup.select_one('a[itemprop="url"], .business-website-view__link')
-            card_snippet['card_website'] = website_detail.get('href') if website_detail else ''
+            # Извлекаем сайт компании (используем предварительно извлеченный, если есть)
+            if pre_extracted_website:
+                card_snippet['card_website'] = pre_extracted_website
+                logger.debug(f"Using pre-extracted website: {pre_extracted_website}")
+            else:
+                website_detail = None
+                website_selectors = [
+                    'a[itemprop="url"]',
+                    '.business-urls-view__link',  # Правильный селектор для Яндекс.Карт
+                    '.business-website-view__link',
+                    'a.business-urls-view__link',
+                    'a.business-website-view__link',
+                    'a[href^="http"]:not([href*="yandex.ru"]):not([href*="maps.yandex"])',
+                    'a[class*="website"]',
+                    'a[class*="site"]',
+                ]
+                for selector in website_selectors:
+                    website_detail = card_details_soup.select_one(selector)
+                    if website_detail:
+                        href = website_detail.get('href', '')
+                        # Проверяем, что это не ссылка на Яндекс
+                        if href and 'yandex.ru' not in href.lower() and 'maps.yandex' not in href.lower():
+                            break
+                        website_detail = None
+                
+                card_snippet['card_website'] = website_detail.get('href') if website_detail else ''
 
 
             phone_selectors = [
@@ -1551,6 +1577,93 @@ class YandexParser(BaseParser):
         logger.info(f"Scroll completed: {scroll_iterations} iterations, found {max_card_count} cards")
         return max_card_count
 
+    def _collect_card_urls_only(self, search_query_url: str) -> List[str]:
+        """
+        Собирает только URL карточек без парсинга данных и отзывов.
+        Используется для оптимизации: сначала собираем все URL по всем городам,
+        потом фильтруем, потом парсим.
+        """
+        all_card_urls = set()
+        try:
+            self.driver.navigate(search_query_url)
+            time.sleep(3)
+            self.check_captcha()
+            
+            self._update_progress("Поиск карточек...")
+            
+            page_source, soup = self._get_page_source_and_soup()
+            
+            # Пагинация
+            pagination_links = soup.select('a[href*="page="]')
+            all_pages_urls = set()
+            for link in pagination_links:
+                href = link.get('href', '')
+                if not href or 'page=' not in href or href.startswith('#'):
+                    continue
+                if not href.startswith('http'):
+                    href = urllib.parse.urljoin("https://yandex.ru", href)
+                all_pages_urls.add(href)
+            
+            pages_to_process = [search_query_url]
+            if all_pages_urls:
+                sorted_pages = sorted(all_pages_urls)
+                pages_to_process.extend(sorted_pages[:50])
+                logger.info(f"Found {len(all_pages_urls)} pagination pages for Yandex cards, will process up to 50 pages")
+            
+            for page_num, page_url in enumerate(pages_to_process, start=1):
+                if self._is_stopped():
+                    break
+                try:
+                    if page_url != search_query_url:
+                        logger.info(f"Processing search page {page_num}/{len(pages_to_process)}: {page_url}")
+                        self._update_progress(f"Поиск карточек: обработка страницы {page_num}/{len(pages_to_process)}, найдено {len(all_card_urls)} карточек")
+                        self.driver.navigate(page_url)
+                        time.sleep(3)
+                        self.check_captcha()
+                        page_source, soup = self._get_page_source_and_soup()
+                    
+                    initial_card_count = len(all_card_urls)
+                    logger.info(f"Initial card count on page {page_num}: {initial_card_count}")
+                    
+                    self._update_progress(f"Поиск карточек: прокрутка страницы {page_num} для загрузки всех карточек...")
+                    cards_count_after_scroll = self._scroll_to_load_all_cards(
+                        max_scrolls=self._scroll_max_iter,
+                        scroll_step=self._scroll_step,
+                        max_cards_to_fetch=self._max_records,
+                        max_no_change_scrolls=5,
+                    )
+                    logger.info(f"Scroll completed for page {page_num}. Found {cards_count_after_scroll} cards after scrolling.")
+                    time.sleep(3)
+                    
+                    page_source, soup = self._get_page_source_and_soup()
+                    
+                    for selector in self._card_selectors:
+                        elements = soup.select(selector)
+                        for elem in elements:
+                            href = elem.get('href', '')
+                            if href and ('/maps/org/' in href or '/org/' in href):
+                                if '/gallery/' in href:
+                                    continue
+                                if not href.startswith('http'):
+                                    href = urllib.parse.urljoin("https://yandex.ru", href)
+                                all_card_urls.add(href)
+                    
+                    new_cards = len(all_card_urls) - initial_card_count
+                    logger.info(f"Found {new_cards} new cards on page {page_num}. Total: {len(all_card_urls)}")
+                    
+                    if len(all_card_urls) >= self._max_records:
+                        logger.info(f"Reached max records limit ({self._max_records}). Stopping pagination.")
+                        break
+                except Exception as page_error:
+                    logger.error(f"Error processing Yandex search page {page_url}: {page_error}", exc_info=True)
+                    continue
+            
+            logger.info(f"Collected {len(all_card_urls)} unique card URLs from {len(pages_to_process)} pages")
+            return list(all_card_urls)
+        except Exception as e:
+            logger.error(f"Error in _collect_card_urls_only: {e}", exc_info=True)
+            return list(all_card_urls)
+
     def _parse_cards(self, search_query_url: str) -> List[Dict[str, Any]]:
         self._collected_card_data.clear()
         self._aggregated_data = {
@@ -1663,9 +1776,37 @@ class YandexParser(BaseParser):
             
             logger.info(f"Found {len(all_card_urls)} unique card URLs from {len(pages_to_process)} pages")
             
-            # Собираем все карточки с данными
+            # ОПТИМИЗАЦИЯ: Ранняя фильтрация по сайту (если указан целевой сайт)
+            # Сохраняем извлеченные сайты для переиспользования при полном парсинге
+            card_url_to_website: Dict[str, str] = {}
+            filtered_card_urls = list(all_card_urls)
+            if self._target_website:
+                logger.info(f"Применяю раннюю фильтрацию по сайту: {self._target_website}")
+                logger.info(f"Быстрая проверка сайтов для {len(filtered_card_urls)} карточек...")
+                original_count = len(filtered_card_urls)
+                matching_urls = []
+                
+                for idx, card_url in enumerate(filtered_card_urls[:self._max_records], 1):
+                    if self._is_stopped():
+                        break
+                    if idx % 10 == 0:
+                        self._update_progress(f"Проверка сайтов: {idx}/{min(len(filtered_card_urls), self._max_records)}")
+                    
+                    website = self._quick_extract_website(card_url)
+                    # Сохраняем извлеченный сайт для переиспользования
+                    card_url_to_website[card_url] = website
+                    if self._website_matches(website, self._target_website):
+                        matching_urls.append(card_url)
+                        logger.debug(f"Карточка {idx} прошла фильтр по сайту: {card_url} -> {website}")
+                    else:
+                        logger.debug(f"Карточка {idx} исключена (сайт не совпадает): {card_url} -> {website}")
+                
+                filtered_card_urls = matching_urls
+                logger.info(f"Ранняя фильтрация завершена: {original_count} -> {len(filtered_card_urls)} карточек (осталось {len(filtered_card_urls)} для полного парсинга)")
+            
+            # Собираем все карточки с данными (только для отфильтрованных URL)
             all_cards_data = []
-            for idx, card_url in enumerate(list(all_card_urls)[:self._max_records]):
+            for idx, card_url in enumerate(filtered_card_urls[:self._max_records]):
                 if self._is_stopped():
                     logger.info(f"Yandex cards: stop flag detected before processing card index {idx}, breaking cards loop")
                     break
@@ -1679,7 +1820,7 @@ class YandexParser(BaseParser):
                     self.check_captcha()
                     
                     page_source, card_soup = self._get_page_source_and_soup()
-                    card_data = self._extract_card_data_from_detail_page(card_soup)
+                    card_data = self._extract_card_data_from_detail_page(card_soup, pre_extracted_website=card_url_to_website.get(card_url))
                     
                     if card_data and card_data.get('card_name'):
                         all_cards_data.append(card_data)
@@ -1705,7 +1846,71 @@ class YandexParser(BaseParser):
             logger.error(f"Error in _parse_cards: {e}", exc_info=True)
             return self._collected_card_data
 
-    def parse(self, url: str) -> Dict[str, Any]:
+    def _website_matches(self, card_website: str, target_website: str) -> bool:
+        """
+        Проверяет, соответствует ли сайт карточки целевому сайту.
+        Нормализует оба URL для сравнения (убирает протокол, www, trailing slash).
+        """
+        if not card_website or not target_website:
+            return False
+        
+        def normalize_url(url: str) -> str:
+            """Нормализует URL для сравнения"""
+            url = url.strip().lower()
+            # Убираем протокол
+            url = re.sub(r'^https?://', '', url)
+            # Убираем www.
+            url = re.sub(r'^www\.', '', url)
+            # Убираем trailing slash
+            url = url.rstrip('/')
+            # Убираем путь и параметры (оставляем только домен)
+            url = url.split('/')[0]
+            url = url.split('?')[0]
+            return url
+        
+        normalized_card = normalize_url(card_website)
+        normalized_target = normalize_url(target_website)
+        
+        return normalized_card == normalized_target
+
+    def _quick_extract_website(self, card_url: str) -> str:
+        """
+        Быстро извлекает только сайт из карточки без полного парсинга.
+        Используется для ранней фильтрации карточек по сайту.
+        """
+        original_url = self.driver.get_current_url()
+        try:
+            self.driver.navigate(card_url)
+            time.sleep(1)  # Короткая задержка для загрузки минимального контента
+            page_source, soup = self._get_page_source_and_soup()
+            
+            website_selectors = [
+                'a[itemprop="url"]',
+                '.business-urls-view__link',  # Правильный селектор для Яндекс.Карт
+                '.business-website-view__link',
+                'a.business-urls-view__link',
+                'a.business-website-view__link',
+                'a[href^="http"]:not([href*="yandex.ru"]):not([href*="maps.yandex"])',
+                'a[class*="website"]',
+                'a[class*="site"]',
+            ]
+            website = ""
+            for selector in website_selectors:
+                website_elem = soup.select_one(selector)
+                if website_elem:
+                    website = website_elem.get('href', '')
+                    if website and 'yandex.ru' not in website.lower() and 'maps.yandex' not in website.lower() and '2gis.ru' not in website.lower():
+                        break
+            return website
+        except Exception as e:
+            logger.warning(f"Error during quick website extraction for {card_url}: {e}")
+            return ""
+        finally:
+            # Возвращаемся на предыдущую страницу, чтобы не нарушать основной цикл
+            self.driver.navigate(original_url)
+            time.sleep(1)
+
+    def parse(self, url: str, search_query_site: Optional[str] = None) -> Dict[str, Any]:
         self._update_progress("Инициализация парсера Yandex...")
         self._url = url
         parsed_url = urllib.parse.urlparse(url)
@@ -1722,7 +1927,12 @@ class YandexParser(BaseParser):
         else:
             self._search_query_name = "YandexMapsSearch"
 
+        # Сохраняем целевой сайт для фильтрации
+        self._target_website = search_query_site
+        
         logger.info(f"Starting Yandex Parser for URL: {url}. Search query name extracted as: {self._search_query_name}")
+        if self._target_website:
+            logger.info(f"Target website for filtering: {self._target_website}")
 
         try:
             collected_cards_data = self._parse_cards(url)
