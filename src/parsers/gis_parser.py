@@ -24,6 +24,7 @@ class GisParser(BaseParser):
         super().__init__(driver, settings)
         self._url: str = ""
         self._target_website: Optional[str] = None  # Целевой сайт для фильтрации
+        self._target_address: Optional[str] = None  # Целевой адрес для фильтрации
 
         self._scroll_step: int = getattr(self._settings.parser, 'gis_scroll_step', 500)
         self._scroll_max_iter: int = getattr(self._settings.parser, 'gis_scroll_max_iter', 100)
@@ -633,6 +634,52 @@ class GisParser(BaseParser):
                 logger.warning("Reviews may not have loaded properly, continuing anyway")
             
             page_source, soup_content = self._get_page_source_and_soup()
+            
+            # Извлекаем рейтинг из структуры страницы карточки (до парсинга отзывов)
+            # Структура: <div class="_1tam240">5</div>
+            card_rating_from_page = 0.0
+            rating_selectors_page = [
+                'div._1tam240',  # Точный селектор для рейтинга
+                'div[class*="_1tam240"]',
+                '[class*="_1tam240"]',
+                '[class*="rating"]',
+                '[class*="star"]',
+                '[data-rating]',
+            ]
+            for selector in rating_selectors_page:
+                try:
+                    rating_elems = soup_content.select(selector)
+                    for rating_elem in rating_elems:
+                        rating_text = rating_elem.get_text(strip=True)
+                        # Если это число напрямую (как в _1tam240)
+                        if rating_text.replace('.', '', 1).isdigit():
+                            potential_rating = float(rating_text)
+                            if 1.0 <= potential_rating <= 5.0:
+                                card_rating_from_page = potential_rating
+                                logger.info(f"Found rating from card page via selector {selector}: {card_rating_from_page}")
+                                break
+                        # Также ищем число в тексте
+                        rating_match = re.search(r'([1-5](?:\.\d+)?)', rating_text)
+                        if rating_match:
+                            potential_rating = float(rating_match.group(1))
+                            if 1.0 <= potential_rating <= 5.0:
+                                card_rating_from_page = potential_rating
+                                logger.info(f"Found rating from card page via selector {selector}: {card_rating_from_page}")
+                                break
+                        # Также проверяем data-атрибуты
+                        if rating_elem.get('data-rating'):
+                            try:
+                                card_rating_from_page = float(rating_elem.get('data-rating'))
+                                if 1.0 <= card_rating_from_page <= 5.0:
+                                    logger.info(f"Found rating from card page data-rating: {card_rating_from_page}")
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+                    if card_rating_from_page > 0:
+                        break
+                except Exception as e:
+                    logger.debug(f"Error with rating selector {selector}: {e}")
+                    continue
 
             # Сохраняем HTML вкладки отзывов для отладки селекторов
             try:
@@ -657,34 +704,119 @@ class GisParser(BaseParser):
             except Exception as dump_error:
                 logger.warning(f"Could not save 2GIS reviews debug HTML: {dump_error}")
 
-            # Попробуем оценить общее количество отзывов по счетчику
+            # Извлекаем точное количество отзывов из структуры страницы карточки
+            # Структура: <h2 class="_12jewu69"><a href="/spb/firm/70000001030294479/tab/reviews" class="_rdxuhv3">Отзывы<span class="_1xhlznaa">25</span></a></h2>
             reviews_count_total = 0
-            count_selectors = [
-                '[class*="review"][class*="tab"]',
-                'a[href*="/tab/reviews"]',
-                'meta[name="description"]',  # В meta description часто указывается количество отзывов
-            ]
-            for selector in count_selectors:
-                for elem in soup_content.select(selector):
-                    text = elem.get_text(strip=True) if hasattr(elem, 'get_text') else (elem.get('content', '') if hasattr(elem, 'get') else str(elem))
-                    matches = re.findall(r'(\d+)', text)
-                    if matches:
-                        potential_count = max(int(m) for m in matches)
-                        if potential_count > reviews_count_total and potential_count < 10000:  # Фильтруем слишком большие числа
+            
+            # ПРИОРИТЕТ 1: Точный селектор из структуры карточки
+            reviews_count_elem = soup_content.select_one('h2._12jewu69 a._rdxuhv3 span._1xhlznaa, h2[class*="_12jewu69"] a[class*="_rdxuhv3"] span._1xhlznaa, span._1xhlznaa')
+            if reviews_count_elem:
+                reviews_text = reviews_count_elem.get_text(strip=True)
+                if reviews_text.isdigit():
+                    reviews_count_total = int(reviews_text)
+                    logger.info(f"Found reviews count from card page structure (span._1xhlznaa): {reviews_count_total}")
+            
+            # ПРИОРИТЕТ 2: Альтернативные селекторы для span._1xhlznaa
+            if reviews_count_total == 0:
+                for selector in ['span._1xhlznaa', 'span[class*="_1xhlznaa"]', '[class*="_1xhlznaa"]']:
+                    reviews_count_elems = soup_content.select(selector)
+                    for elem in reviews_count_elems:
+                        reviews_text = elem.get_text(strip=True)
+                        if reviews_text.isdigit():
+                            potential_count = int(reviews_text)
+                            if 0 < potential_count < 10000:  # Разумные пределы
+                                reviews_count_total = potential_count
+                                logger.info(f"Found reviews count via selector {selector}: {reviews_count_total}")
+                                break
+                    if reviews_count_total > 0:
+                        break
+            
+            # ПРИОРИТЕТ 3: Поиск в ссылке на вкладку отзывов
+            if reviews_count_total == 0:
+                count_selectors = [
+                    'a[href*="/tab/reviews"]',
+                    '[class*="review"][class*="tab"]',
+                ]
+                for selector in count_selectors:
+                    for elem in soup_content.select(selector):
+                        text = elem.get_text(strip=True) if hasattr(elem, 'get_text') else (elem.get('content', '') if hasattr(elem, 'get') else str(elem))
+                        matches = re.findall(r'(\d+)', text)
+                        if matches:
+                            potential_count = max(int(m) for m in matches)
+                            if potential_count > reviews_count_total and potential_count < 10000:  # Фильтруем слишком большие числа
+                                reviews_count_total = potential_count
+                                logger.info(f"Found reviews count via selector {selector}: {reviews_count_total}")
+            
+            # ПРИОРИТЕТ 4: Из meta description
+            if reviews_count_total == 0:
+                meta_desc = soup_content.select_one('meta[name="description"]')
+                if meta_desc:
+                    desc_content = meta_desc.get('content', '')
+                    desc_matches = re.findall(r'(\d+)\s+отзыв', desc_content, re.IGNORECASE)
+                    if desc_matches:
+                        potential_count = max(int(m) for m in desc_matches)
+                        if potential_count > reviews_count_total:
                             reviews_count_total = potential_count
+                            logger.info(f"Found reviews count from meta description: {reviews_count_total}")
             
-            # Также пробуем извлечь из meta description
-            meta_desc = soup_content.select_one('meta[name="description"]')
-            if meta_desc:
-                desc_content = meta_desc.get('content', '')
-                desc_matches = re.findall(r'(\d+)\s+отзыв', desc_content, re.IGNORECASE)
-                if desc_matches:
-                    potential_count = max(int(m) for m in desc_matches)
-                    if potential_count > reviews_count_total:
-                        reviews_count_total = potential_count
+            logger.info(f"Expected total reviews count from card page: {reviews_count_total}")
             
-            logger.info(f"Expected total reviews count: {reviews_count_total}")
-
+            # Извлекаем количество отвеченных отзывов из структуры страницы
+            # Структура: <span class="_1iurgbx">С ответами</span>
+            answered_reviews_count = 0
+            answered_selectors = [
+                'span._1iurgbx',  # Точный селектор
+                'span[class*="_1iurgbx"]',
+            ]
+            for selector in answered_selectors:
+                try:
+                    answered_elems = soup_content.select(selector)
+                    for elem in answered_elems:
+                        elem_text = elem.get_text(strip=True)
+                        # Ищем элемент с текстом "С ответами" или "с ответами"
+                        if 'ответами' in elem_text.lower() or 'ответ' in elem_text.lower():
+                            # Ищем число в родительском элементе или в соседних элементах
+                            parent = elem.find_parent()
+                            if parent:
+                                # Ищем число в тексте родителя
+                                parent_text = parent.get_text(strip=True)
+                                # Ищем паттерн типа "16 С ответами" или "С ответами 16"
+                                answered_match = re.search(r'(\d+)\s*(?:с\s+ответами|ответами)|(?:с\s+ответами|ответами)\s*(\d+)', parent_text, re.IGNORECASE)
+                                if answered_match:
+                                    answered_reviews_count = int(answered_match.group(1) or answered_match.group(2))
+                                    logger.info(f"Found answered reviews count via selector {selector}: {answered_reviews_count}")
+                                    break
+                                # Если не нашли паттерн, ищем любое число в родителе
+                                numbers = re.findall(r'\b(\d+)\b', parent_text)
+                                if numbers:
+                                    # Берем первое число, которое может быть количеством отвеченных
+                                    for num_str in numbers:
+                                        num = int(num_str)
+                                        if 1 <= num <= reviews_count_total:  # Разумные пределы
+                                            answered_reviews_count = num
+                                            logger.info(f"Found answered reviews count via selector {selector} (from parent numbers): {answered_reviews_count}")
+                                            break
+                                    if answered_reviews_count > 0:
+                                        break
+                    if answered_reviews_count > 0:
+                        break
+                except Exception as e:
+                    logger.debug(f"Error with answered selector {selector}: {e}")
+                    continue
+            
+            # Если не нашли через селекторы, ищем в тексте страницы
+            if answered_reviews_count == 0:
+                page_text = soup_content.get_text(separator=' ', strip=True)
+                answered_matches = re.findall(r'(\d+)\s*(?:с\s+ответами|ответами|ответ)', page_text, re.IGNORECASE)
+                if answered_matches:
+                    answered_reviews_count = max(int(m) for m in answered_matches)
+                    if answered_reviews_count <= reviews_count_total:  # Проверяем разумность
+                        logger.info(f"Found answered reviews count from page text: {answered_reviews_count}")
+                    else:
+                        answered_reviews_count = 0
+            
+            logger.info(f"Found answered reviews count from card page: {answered_reviews_count}")
+            
             # Прокручиваем, чтобы подгрузить все отзывы
             self._scroll_to_load_all_reviews(expected_count=reviews_count_total)
             
@@ -758,9 +890,11 @@ class GisParser(BaseParser):
             response_time_count: int = 0
             pages_to_process: List[str] = [reviews_url]
             if all_pages_urls:
-                # Увеличиваем количество страниц для обработки, чтобы получить все отзывы
-                pages_to_process.extend(sorted(all_pages_urls)[:50])  # Увеличено с 10 до 50
-                logger.info(f"Found {len(all_pages_urls)} pagination pages, will process up to 50 pages")
+                # Обрабатываем только реально существующие страницы (не более 10 для оптимизации)
+                sorted_pages = sorted(all_pages_urls)
+                # Ограничиваем до 10 страниц, чтобы не парсить лишнее
+                pages_to_process.extend(sorted_pages[:10])
+                logger.info(f"Found {len(all_pages_urls)} pagination pages, will process up to 10 pages")
 
             seen_review_keys: set[str] = set()
 
@@ -793,7 +927,7 @@ class GisParser(BaseParser):
                         reviews_after_scroll = len(soup_after.select("div._1k5soqfl, [data-review-id], [class*='review-item']"))
                         logger.info(f"After scroll on page {page_url}: found {reviews_after_scroll} review elements")
                     
-                    page_source, soup_content = self._get_page_source_and_soup()
+                        page_source, soup_content = self._get_page_source_and_soup()
                     
                     # Кликаем на все "Читать целиком" для загрузки полного текста отзывов
                     # Повторяем попытку до 3 раз при ошибках
@@ -954,7 +1088,7 @@ class GisParser(BaseParser):
                             )
                             if filled_stars > 0:
                                 rating_value = float(filled_stars)
-                        
+
                         # Способ 2: Ищем рейтинг в data-атрибутах
                         if not rating_value:
                             rating_attr = review_elem.get('data-rating') or review_elem.get('data-score')
@@ -974,7 +1108,7 @@ class GisParser(BaseParser):
                                 rating_match = re.search(r'(\d+(?:\.\d+)?)', rating_text)
                                 if rating_match:
                                     rating_value = float(rating_match.group(1))
-                        
+
                         # Способ 4: Ищем рейтинг во всем тексте отзыва (паттерны типа "5 из 5", "4.5", "⭐5")
                         if not rating_value:
                             all_text = review_elem.get_text(separator=' ', strip=True)
@@ -1025,6 +1159,39 @@ class GisParser(BaseParser):
                             for text_element in text_elements:
                                 candidate_text = text_element.get_text(separator=' ', strip=True)
                                 candidate_text = ' '.join(candidate_text.split())
+                                
+                                # Очищаем от информации об авторе и количестве отзывов в начале
+                                # Убираем невидимые символы и имя автора с количеством отзывов
+                                candidate_text = re.sub(
+                                    r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[a-zA-Zа-яёА-ЯЁ0-9_\-]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                    '',
+                                    candidate_text,
+                                    flags=re.IGNORECASE
+                                )
+                                # Дополнительная очистка для полных имен
+                                candidate_text = re.sub(
+                                    r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[А-ЯЁA-Z][а-яёa-z]+\s+[А-ЯЁA-Z][а-яёa-z]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                    '',
+                                    candidate_text,
+                                    flags=re.IGNORECASE
+                                )
+                                candidate_text = re.sub(
+                                    r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[А-ЯЁA-Z][а-яёa-z]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                    '',
+                                    candidate_text,
+                                    flags=re.IGNORECASE
+                                )
+                                
+                                # Очищаем от "Полезно?" в конце
+                                candidate_text = re.sub(
+                                    r'\s*(Полезно\??|полезно\??)\s*$',
+                                    '',
+                                    candidate_text,
+                                    flags=re.IGNORECASE
+                                )
+                                
+                                candidate_text = ' '.join(candidate_text.split()).strip()
+                                
                                 # Принимаем текст отзыва, если он не пустой и не слишком короткий
                                 # Уменьшили минимальную длину с 10 до 3 символов
                                 if candidate_text and len(candidate_text) >= 3:
@@ -1032,7 +1199,7 @@ class GisParser(BaseParser):
                                     # Но только если текст очень короткий (меньше 20 символов)
                                     if len(candidate_text) >= 20 or not re.match(r'^[\d\sа-яёА-ЯЁ,\.]+$', candidate_text):
                                         review_text = candidate_text
-                                        break
+                                    break
                             if review_text:
                                 break
 
@@ -1062,36 +1229,53 @@ class GisParser(BaseParser):
                                 all_text = re.sub(r'читать\s+целиком', '', all_text, flags=re.IGNORECASE)
                                 all_text = re.sub(r'показать\s+еще', '', all_text, flags=re.IGNORECASE)
                                 
-                                # Очищаем от метаданных
-                                cleaned_text = re.sub(
-                                    r'\d+[.,]\d+\s*(звезд|star|⭐)',
+                                # Очищаем от информации об авторе и количестве отзывов в начале
+                                all_text = re.sub(
+                                    r'^[a-zA-Zа-яёА-ЯЁ0-9_\-]+\s+\d+\s+отзыв[аов]*\s*',
                                     '',
                                     all_text,
-                                    flags=re.IGNORECASE,
+                                    flags=re.IGNORECASE
                                 )
-                                cleaned_text = re.sub(
-                                    r'\d{1,2}\s+('
-                                    r'янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек'
-                                    r')[а-яё]*\s+\d{4}',
-                                    '',
-                                    cleaned_text,
-                                    flags=re.IGNORECASE,
-                                )
-                                # Удаляем только отдельные слова "Полезно", "Оценка" и т.д., но не удаляем их из текста отзыва
-                                cleaned_text = re.sub(
-                                    r'^\s*(Полезно|полезно|Оценка|оценка|Отзыв|отзыв|звезд|лайк)\s*$',
-                                    '',
-                                    cleaned_text,
-                                    flags=re.IGNORECASE | re.MULTILINE,
-                                )
-                                cleaned_text = ' '.join(cleaned_text.split()).strip()
                                 
-                                # Принимаем текст, если он длиннее 3 символов
-                                # Но проверяем, что это не только метаданные (даты, имена)
-                                if len(cleaned_text) >= 3:
-                                    # Если текст очень короткий (меньше 15 символов), проверяем, что это не только метаданные
-                                    if len(cleaned_text) >= 15 or not re.match(r'^[\d\sа-яёА-ЯЁ,\.\-]+$', cleaned_text):
-                                        review_text = cleaned_text
+                                # Очищаем от метаданных
+                            cleaned_text = re.sub(
+                                r'\d+[.,]\d+\s*(звезд|star|⭐)',
+                                '',
+                                all_text,
+                                flags=re.IGNORECASE,
+                            )
+                            cleaned_text = re.sub(
+                                r'\d{1,2}\s+('
+                                r'янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек'
+                                r')[а-яё]*\s+\d{4}',
+                                '',
+                                cleaned_text,
+                                flags=re.IGNORECASE,
+                            )
+                                # Удаляем только отдельные слова "Полезно", "Оценка" и т.д., но не удаляем их из текста отзыва
+                            cleaned_text = re.sub(
+                                    r'^\s*(Полезно|полезно|Оценка|оценка|Отзыв|отзыв|звезд|лайк)\s*$',
+                                '',
+                                cleaned_text,
+                                    flags=re.IGNORECASE | re.MULTILINE,
+                            )
+                            
+                            # Очищаем от "Полезно?" в конце текста
+                            cleaned_text = re.sub(
+                                r'\s*(Полезно\??|полезно\??)\s*$',
+                                '',
+                                cleaned_text,
+                                flags=re.IGNORECASE
+                            )
+                            
+                            cleaned_text = ' '.join(cleaned_text.split()).strip()
+                            
+                            # Принимаем текст, если он длиннее 3 символов
+                            # Но проверяем, что это не только метаданные (даты, имена)
+                            if len(cleaned_text) >= 3:
+                                # Если текст очень короткий (меньше 15 символов), проверяем, что это не только метаданные
+                                if len(cleaned_text) >= 15 or not re.match(r'^[\d\sа-яёА-ЯЁ,\.\-]+$', cleaned_text):
+                                    review_text = cleaned_text
 
                         # Ответ организации
                         answer_elem = review_elem.select_one(
@@ -1100,6 +1284,7 @@ class GisParser(BaseParser):
                         has_response = bool(answer_elem)
                         response_text = ""
                         response_date: Optional[datetime] = None
+                        has_official_marker_in_answer = False  # Флаг для маркера "официальный ответ" в блоке ответа
 
                         if answer_elem:
                             response_text_elem = answer_elem.select_one(
@@ -1116,6 +1301,10 @@ class GisParser(BaseParser):
                             if response_date_elem:
                                 response_date_text = response_date_elem.get_text(strip=True)
                                 response_date = parse_russian_date(response_date_text)
+                            
+                            # Проверяем маркер "официальный ответ" ТОЛЬКО в блоке ответа
+                            answer_text = answer_elem.get_text(separator=' ', strip=True).lower() if answer_elem else ""
+                            has_official_marker_in_answer = 'официальный ответ' in answer_text or 'ответ компании' in answer_text or 'ответ организации' in answer_text
 
                         # 2ГИС часто помечает официальный ответ только текстом
                         # вида "29 мая 2025, официальный ответ" без специальных классов.
@@ -1123,19 +1312,38 @@ class GisParser(BaseParser):
                         if not has_response:
                             full_text = review_elem.get_text(separator=' ', strip=True)
                             full_text_lower = full_text.lower()
-                            if 'официальный ответ' in full_text_lower:
-                                has_response = True
-                                # Пытаемся вытащить дату ответа из фрагмента "DD месяц YYYY, официальный ответ"
-                                m_resp = re.search(
-                                    r'(\d{1,2}\s+[а-яё]+\s+\d{4}).{0,40}официальный ответ',
-                                    full_text_lower,
-                                    re.IGNORECASE,
-                                )
-                                if m_resp:
-                                    try:
-                                        response_date = parse_russian_date(m_resp.group(1))
-                                    except Exception:
-                                        response_date = None
+                            # Проверяем различные варианты обозначения ответа компании
+                            response_indicators = [
+                                'официальный ответ',
+                                'ответ компании',
+                                'ответ организации',
+                                'ответ от компании',
+                            ]
+                            for indicator in response_indicators:
+                                if indicator in full_text_lower:
+                                    has_response = True
+                                    # Пытаемся вытащить дату ответа из фрагмента "DD месяц YYYY, официальный ответ"
+                                    m_resp = re.search(
+                                        r'(\d{1,2}\s+[а-яё]+\s+\d{4}).{0,40}' + re.escape(indicator),
+                                        full_text_lower,
+                                        re.IGNORECASE,
+                                    )
+                                    if m_resp:
+                                        try:
+                                            response_date = parse_russian_date(m_resp.group(1))
+                                        except Exception:
+                                            response_date = None
+                                    # Если нашли ответ, но не нашли дату, пробуем извлечь response_text
+                                    if not response_text:
+                                        # Ищем текст ответа после индикатора
+                                        response_match = re.search(
+                                            r'(?:' + re.escape(indicator) + r'[:\s]*)(.+?)(?:\n|$)',
+                                            full_text,
+                                            re.IGNORECASE | re.DOTALL
+                                        )
+                                        if response_match:
+                                            response_text = response_match.group(1).strip()
+                                    break
 
                         # Логируем информацию о каждом обработанном элементе (до проверки дубликатов)
                         if processed_count <= 20:  # Логируем первые 20 для отладки
@@ -1145,20 +1353,73 @@ class GisParser(BaseParser):
                                 f"text_len={len(review_text)}, has_text={bool(review_text)}, "
                                 f"date={date_text}"
                             )
-                        
-                        # Уникальный ключ отзыва, чтобы не дублировать
+
+                        # ОТКЛЮЧЕНО: Проверка на дубликаты отключена для сбора всех отзывов
+                        # Это позволяет собирать все отзывы, включая возможные дубликаты,
+                        # чтобы получить точное количество отвеченных отзывов из структуры страницы
+                        # Уникальный ключ отзыва (оставляем для возможной будущей статистики)
                         review_key = f"{author_name}_{date_text}_{rating_value}_" \
                             f"{hashlib.md5(review_text[:50].encode('utf-8', errors='ignore')).hexdigest()[:10]}"
-                        if review_key in seen_review_keys:
-                            if processed_count <= 20 or skipped_count % 10 == 0:
-                                logger.debug(f"Skipping duplicate review: key={review_key[:50]}")
-                            skipped_count += 1  # Учитываем дубликаты в статистике пропусков
-                            continue
-                        seen_review_keys.add(review_key)
-                        
-                        # Убираем чисто служебные тексты вида "Подписаться", "Полезно?" и т.п.
-                        # (аналогично Яндекс парсеру)
+                        # ПРОВЕРКА НА ДУБЛИКАТЫ ОТКЛЮЧЕНА - сохраняем все отзывы
+                        # if review_key in seen_review_keys:
+                        #     if processed_count <= 20 or skipped_count % 10 == 0:
+                        #         logger.debug(f"Skipping duplicate review: key={review_key[:50]}")
+                        #     skipped_count += 1
+                        #     continue
+                        # seen_review_keys.add(review_key)
+
+                        # Очищаем текст отзыва от лишних элементов
                         if review_text:
+                            # Убираем информацию об авторе и количестве отзывов в начале текста
+                            # Паттерны типа "МБ Максим Балышев 2 отзыва" или "Алексей 2 отзыва" или "username 5 отзывов"
+                            # Убираем невидимые символы и имя автора с количеством отзывов в начале
+                            
+                            # Паттерн 1: Инициалы + полное имя + количество отзывов (например: "МБ Максим Балышев 2 отзыва")
+                            review_text = re.sub(
+                                r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[А-ЯЁA-Z]{1,3}\s+[А-ЯЁA-Z][а-яёa-z]+\s+[А-ЯЁA-Z][а-яёa-z]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                '',
+                                review_text,
+                                flags=re.IGNORECASE
+                            )
+                            # Паттерн 2: Полное имя + количество отзывов (например: "Алексей Иванов 2 отзыва")
+                            review_text = re.sub(
+                                r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[А-ЯЁA-Z][а-яёa-z]+\s+[А-ЯЁA-Z][а-яёa-z]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                '',
+                                review_text,
+                                flags=re.IGNORECASE
+                            )
+                            # Паттерн 3: Одиночное имя или username + количество отзывов (например: "Алексей 2 отзыва" или "username 5 отзывов")
+                            review_text = re.sub(
+                                r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[a-zA-Zа-яёА-ЯЁ0-9_\-]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                '',
+                                review_text,
+                                flags=re.IGNORECASE
+                            )
+                            # Паттерн 4: Инициалы + количество отзывов (например: "МБ 2 отзыва")
+                            review_text = re.sub(
+                                r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[А-ЯЁA-Z]{1,3}\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                '',
+                                review_text,
+                                flags=re.IGNORECASE
+                            )
+                            
+                            # Убираем служебные тексты в конце: "Полезно?", "Полезно", "Подписаться"
+                            review_text = re.sub(
+                                r'\s*(Полезно\??|полезно\??|Подписаться|подписаться)\s*$',
+                                '',
+                                review_text,
+                                flags=re.IGNORECASE
+                            )
+                            
+                            # Убираем служебные тексты в начале
+                            review_text = re.sub(
+                                r'^\s*(Полезно\??|полезно\??|Подписаться|подписаться)\s+',
+                                '',
+                                review_text,
+                                flags=re.IGNORECASE
+                            )
+                            
+                            # Убираем чисто служебные тексты (если весь текст состоит только из них)
                             rt_lower = review_text.strip().lower()
                             service_texts = {
                                 'подписаться',
@@ -1168,6 +1429,9 @@ class GisParser(BaseParser):
                             }
                             if rt_lower in service_texts or ('подписаться' in rt_lower and len(rt_lower) <= 20):
                                 review_text = ""
+                            
+                            # Очищаем от лишних пробелов
+                            review_text = ' '.join(review_text.split()).strip()
                         
                         # Проверяем, является ли элемент ответом компании (а не отзывом пользователя)
                         # Признаки ответа компании:
@@ -1200,6 +1464,68 @@ class GisParser(BaseParser):
                         # ВАЖНО: проверяем только начало текста, чтобы не ловить обычные отзывы
                         # Ужесточаем проверку для более точного определения ответов компании
                         is_company_response = False
+                        
+                        # Проверка 1: Если автор совпадает с названием компании или содержит "официальный ответ"
+                        # Получаем название компании из карточки, если доступно
+                        card_name = ""
+                        try:
+                            # Пытаемся найти название компании на странице
+                            card_name_elem = soup_content.select_one('h1, [class*="name"], [class*="title"]')
+                            if card_name_elem:
+                                card_name = card_name_elem.get_text(strip=True)
+                        except Exception:
+                            pass
+                        
+                        # Если автор совпадает с названием компании или содержит его - это ответ компании
+                        # Улучшенная проверка: учитываем, что автор может быть "Победа, агентство", а название "Победа"
+                        # ВАЖНО: не пропускаем отзывы с рейтингом, если текст не похож на ответ компании
+                        if card_name and author_name:
+                            author_lower = author_name.lower().strip()
+                            card_name_lower = card_name.lower().strip()
+                            # Извлекаем основное слово из названия компании (до запятой или первого слова)
+                            card_main_word = card_name_lower.split(',')[0].strip().split()[0] if card_name_lower else ""
+                            
+                            # Проверяем, содержит ли автор название компании или основное слово
+                            author_matches_company = False
+                            if card_main_word and len(card_main_word) > 2:
+                                if card_main_word in author_lower:
+                                    author_matches_company = True
+                            # Также проверяем полное совпадение или обратное включение
+                            if (card_name_lower in author_lower or author_lower in card_name_lower) and len(card_name_lower) > 3:
+                                author_matches_company = True
+                            
+                            # Если автор совпадает с названием компании, но у отзыва есть рейтинг и текст не похож на ответ компании,
+                            # то это может быть отзыв пользователя (например, "Победа оправдала ожидания")
+                            if author_matches_company:
+                                # Проверяем, не является ли это отзывом пользователя с рейтингом
+                                if rating_value > 0 and review_text_lower:
+                                    # Если текст начинается с названия компании в кавычках или содержит "оправдала", "работали" и т.д. - это отзыв пользователя
+                                    review_start = review_text_lower[:100].strip()
+                                    user_review_indicators = [
+                                        'оправдала', 'оправдали', 'работали', 'работаем', 'обратились', 'обращались',
+                                        'заказали', 'заказывали', 'рекомендую', 'рекомендуем', 'довольны', 'доволен',
+                                        'нравится', 'понравилось', 'хорошо', 'отлично', 'качественно'
+                                    ]
+                                    # Если текст содержит индикаторы отзыва пользователя - не пропускаем
+                                    if any(indicator in review_start for indicator in user_review_indicators):
+                                        logger.info(f"Author matches company but text indicates user review: author='{author_name}', text_preview={review_text[:50]}")
+                                        author_matches_company = False
+                                
+                                # Если автор содержит "агентство", "компания" или подобное - это точно ответ компании
+                                if 'агентство' in author_lower or 'компания' in author_lower or 'организация' in author_lower:
+                                    is_company_response = True
+                                    logger.info(f"Author contains company type: author='{author_name}', company='{card_name}'")
+                                elif author_matches_company:
+                                    is_company_response = True
+                                    logger.info(f"Author matches company name: author='{author_name}', company='{card_name}'")
+                        
+                        # Проверка 2: Если в тексте элемента есть "официальный ответ" - это ответ компании
+                        full_text_lower_check = (review_elem.get_text(separator=' ', strip=True) or "").lower()
+                        if 'официальный ответ' in full_text_lower_check and rating_value == 0:
+                            is_company_response = True
+                            logger.info(f"Found 'официальный ответ' marker in review element")
+                        
+                        # Проверка 3: Проверяем текст отзыва на типичные фразы ответов компании
                         if review_text_lower:
                             # Проверяем только начало текста (первые 200 символов) для более точного определения
                             review_start = review_text_lower[:200].strip()
@@ -1221,33 +1547,73 @@ class GisParser(BaseParser):
                             elif any(phrase in review_start[:100] for phrase in ['наша техническая поддержка', 'обращайтесь по телефону', 'наша команда', 'мы рады', 'мы стараемся', 'напишите на', 'позвоните по']):
                                 is_company_response = True
                         
-                        # Если это ответ компании (даже с рейтингом), не добавляем в список отзывов
-                        # НЕ учитываем в answered_count, так как это не отзыв пользователя
-                        if is_company_response or (has_response and rating_value == 0 and (not review_text or len(review_text) < 10)):
-                            if processed_count <= 20 or skipped_count % 10 == 0:
-                                logger.debug(f"Found company response (not a user review): author={author_name}, text_preview={review_text[:50] if review_text else 'N/A'}")
-                            # НЕ увеличиваем answered_count, так как это не отзыв пользователя
-                            # Просто пропускаем этот элемент
+                        # Пропускаем ответы компании - они не являются отзывами пользователей
+                        # ВАЖНО: используем has_official_marker_in_answer, который проверяется только в блоке ответа
+                        # Потому что в элементе отзыва может быть и отзыв пользователя, и ответ компании
+                        
+                        # ВАЖНО: ответы компании НЕ должны попадать в список отзывов, даже если у них есть рейтинг
+                        # Если это ответ компании (по любой проверке) - пропускаем БЕЗ ИСКЛЮЧЕНИЙ
+                        if is_company_response or has_official_marker_in_answer:
+                            logger.info(f"Skipping company response: author={author_name}, text_preview={review_text[:100] if review_text else 'N/A'}, has_response={has_response}, rating={rating_value}, is_company_response={is_company_response}, has_official_marker={has_official_marker_in_answer}")
                             skipped_count += 1
                             continue
                         
-                        # Ослабляем проверку: принимаем отзывы с текстом от 3 символов или с рейтингом
-                        if (review_text and len(review_text) >= 3) or rating_value > 0:
+                        # Дополнительная проверка: если автор совпадает с названием компании И текст начинается с типичных фраз ответа
+                        # это точно ответ компании, даже если есть рейтинг
+                        if card_name and author_name:
+                            author_lower = author_name.lower().strip()
+                            card_name_lower = card_name.lower().strip()
+                            if card_name_lower in author_lower or author_lower in card_name_lower:
+                                if review_text_lower:
+                                    review_start = review_text_lower[:150].strip()
+                                    if any(phrase in review_start for phrase in ['спасибо за ваш', 'благодарим вас', 'благодарим за', 'добрый день', 'здравствуйте', 'наша команда', 'наша поддержка']):
+                                        logger.info(f"Skipping company response: author matches company and text starts with company response phrase: author={author_name}, text_preview={review_text[:100]}")
+                                        skipped_count += 1
+                                        continue
+                        
+                        # Пропускаем элементы без рейтинга, которые являются ответами (has_response=True, но нет рейтинга)
+                        if has_response and rating_value == 0 and (not review_text or len(review_text.strip()) < 10):
+                            logger.debug(f"Skipping response without rating: author={author_name}, text_len={len(review_text) if review_text else 0}")
+                            skipped_count += 1
+                            continue
+                        
+                        # Дополнительная проверка: если элемент имеет has_response=True, но нет рейтинга и короткий текст,
+                        # это скорее всего ответ компании, а не отзыв пользователя
+                        if has_response and rating_value == 0 and review_text and len(review_text.strip()) < 20:
+                            # Проверяем, не начинается ли текст с типичных фраз ответа компании
+                            review_start_lower = review_text[:100].lower().strip()
+                            if any(phrase in review_start_lower for phrase in ['спасибо', 'благодарим', 'добрый день', 'здравствуйте', 'наша', 'команда', 'поддержка']):
+                                logger.info(f"Skipping likely company response: short text with has_response=True, text_preview={review_text[:100]}")
+                                skipped_count += 1
+                                continue
+                        
+                        # Пропускаем только элементы без рейтинга И без текста (или с очень коротким текстом < 3 символов)
+                        # Принимаем отзывы с рейтингом ИЛИ с текстом (даже коротким, если есть рейтинг)
+                        if rating_value == 0 and (not review_text or len(review_text.strip()) < 3):
+                            if processed_count <= 20 or skipped_count % 10 == 0:
+                                logger.debug(f"Skipping element without rating and text: author={author_name}")
+                            skipped_count += 1
+                            continue
+                        
+                        # Принимаем элементы с рейтингом ИЛИ с текстом (минимум 3 символа)
+                        if rating_value > 0 or (review_text and len(review_text.strip()) >= 3):
                             review_data = {
-                                'review_rating': rating_value,
-                                'review_text': review_text or "",
-                                'review_author': author_name or "Аноним",
-                                'review_date': format_russian_date(review_date)
-                                if review_date
-                                else (date_text or ""),
-                                'has_response': has_response,
-                                'response_text': response_text,
-                                'response_date': format_russian_date(response_date)
-                                if response_date
-                                else "",
-                            }
+                                    'review_rating': rating_value,
+                                    'review_text': review_text or "",
+                                    'review_author': author_name or "Аноним",
+                                    'review_date': format_russian_date(review_date)
+                                    if review_date
+                                    else (date_text or ""),
+                                    'review_date_datetime': review_date,  # Сохраняем исходный datetime объект для вычисления времени ответа
+                                    'has_response': has_response,
+                                    'response_text': response_text,
+                                    'response_date': format_russian_date(response_date)
+                                    if response_date
+                                    else "",
+                                    'response_date_datetime': response_date,  # Сохраняем исходный datetime объект для вычисления времени ответа
+                                }
                             all_reviews.append(review_data)
-                            
+
                             # Классификация, как и для Яндекса:
                             # 1–2★ — негатив, 3★ — нейтрально, 4–5★ — позитив.
                             # ВАЖНО: классифицируем ТОЛЬКО отзывы с рейтингом > 0
@@ -1256,25 +1622,30 @@ class GisParser(BaseParser):
                                     reviews_info['positive_reviews'] += 1
                                 elif rating_value in (1, 2):
                                     reviews_info['negative_reviews'] += 1
-                            
+
                             if has_response:
                                 reviews_info['answered_count'] += 1
                             else:
                                 reviews_info['unanswered_count'] += 1
 
                             # Накапливаем время ответа для расчёта среднего
+                            # ВАЖНО: вычисляем только для отзывов пользователей с ответами компании
+                            # Формула: среднее время = сумма всех времен ответа / количество отзывов с ответами
                             if has_response and review_date and response_date:
                                 try:
+                                    # Вычисляем разницу между датой ответа и датой отзыва в днях
                                     delta = (response_date - review_date).days
-                                    if delta >= 0:
+                                    if delta >= 0:  # Ответ должен быть после отзыва
                                         response_time_sum_days += float(delta)
                                         response_time_count += 1
-                                except Exception:
+                                        logger.debug(f"Added response time: {delta} days (review: {review_date}, response: {response_date})")
+                                except Exception as e:
+                                    logger.debug(f"Error calculating response time: {e}")
                                     pass
 
                             if review_text:
                                 reviews_info['texts'].append(review_text)
-                            
+
                             logger.debug(
                                 f"Added review: author={review_data['review_author']}, "
                                 f"rating={rating_value}, text_len={len(review_text)}, "
@@ -1318,11 +1689,81 @@ class GisParser(BaseParser):
                     logger.info(f"Continuing with partial results: {len(all_reviews)} reviews collected so far")
                     continue
 
-            # Сохраняем все отзывы без ограничения (было [:500])
-            reviews_info['details'] = all_reviews
-            reviews_info['reviews_count'] = (
-                len(all_reviews) if all_reviews else reviews_count_total
-            )
+            # ВАЖНО: используем reviews_count_total из структуры страницы для агрегированной информации
+            # Это точное значение, которое отображается на странице карточки
+            # А len(all_reviews) - это фактическое количество распарсенных отзывов (может быть меньше из-за фильтрации)
+            if reviews_count_total > 0:
+                reviews_info['reviews_count'] = reviews_count_total
+                logger.info(f"Using reviews count from card page structure: {reviews_count_total} (parsed reviews: {len(all_reviews)})")
+            else:
+                reviews_info['reviews_count'] = len(all_reviews)
+                logger.info(f"Using parsed reviews count: {len(all_reviews)} (no structure count found)")
+            
+            # Разделяем отзывы на блоки: позитивные, негативные, с ответом
+            positive_reviews_list = [r for r in all_reviews if r.get('review_rating', 0) >= 4]
+            negative_reviews_list = [r for r in all_reviews if r.get('review_rating', 0) in (1, 2)]
+            answered_reviews_list = [r for r in all_reviews if r.get('has_response', False)]
+            
+            logger.info(f"Reviews grouped: positive={len(positive_reviews_list)}, negative={len(negative_reviews_list)}, answered={len(answered_reviews_list)}")
+            
+            # ВАЖНО: вычисляем среднее время ответа ТОЛЬКО для блока "С ответом"
+            # Используем исходные datetime объекты из review_data, если они есть
+            answered_response_time_sum = 0.0
+            answered_response_time_count = 0
+            for review in answered_reviews_list:
+                if review.get('has_response', False):
+                    # ПРИОРИТЕТ 1: Используем исходные datetime объекты, если они сохранены в review
+                    review_date_parsed = review.get('review_date_datetime')
+                    response_date_parsed = review.get('response_date_datetime')
+                    
+                    # ПРИОРИТЕТ 2: Если datetime объекты не сохранены, парсим из строк
+                    if not review_date_parsed or not response_date_parsed:
+                        review_date_str = review.get('review_date', '')
+                        response_date_str = review.get('response_date', '')
+                        if review_date_str and response_date_str:
+                            try:
+                                review_date_parsed = parse_russian_date(review_date_str)
+                                response_date_parsed = parse_russian_date(response_date_str)
+                            except Exception as e:
+                                logger.debug(f"Error parsing dates for response time: {e}")
+                                continue
+                    
+                    if review_date_parsed and response_date_parsed:
+                        delta = (response_date_parsed - review_date_parsed).days
+                        if delta >= 0 and delta < 3650:  # Разумные пределы: не более 10 лет
+                            answered_response_time_sum += float(delta)
+                            answered_response_time_count += 1
+                            logger.info(f"Added response time for answered review: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
+                        elif delta < 0:
+                            logger.warning(f"Negative response time delta: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
+                        elif delta >= 3650:
+                            logger.warning(f"Unrealistic response time delta: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
+            
+            # Вычисляем среднее время ответа для блока "С ответом"
+            if answered_response_time_count > 0:
+                avg_response_time_answered = round(answered_response_time_sum / answered_response_time_count, 1)
+                reviews_info['avg_response_time_days'] = avg_response_time_answered
+                logger.info(f"Calculated average response time for answered reviews block: {avg_response_time_answered} days (from {answered_response_time_count} answered reviews)")
+            else:
+                reviews_info['avg_response_time_days'] = 0.0
+                logger.info("No response time data available for answered reviews block")
+            
+            # ВАЖНО: используем количество отвеченных отзывов из структуры страницы для агрегированной информации
+            # Это точное значение, которое отображается на странице карточки
+            parsed_answered_count = len(answered_reviews_list)
+            if answered_reviews_count > 0:
+                reviews_info['answered_count'] = answered_reviews_count
+                logger.info(f"Using answered reviews count from card page structure: {answered_reviews_count} (parsed answered: {parsed_answered_count})")
+            # Если не нашли в структуре, используем фактическое количество из парсинга
+            elif parsed_answered_count > 0:
+                reviews_info['answered_count'] = parsed_answered_count
+                logger.info(f"Using parsed answered reviews count: {parsed_answered_count} (no structure count found)")
+            
+            # Сохраняем отзывы разделенными по блокам
+            reviews_info['details'] = all_reviews  # Все отзывы
+            reviews_info['positive_reviews_list'] = positive_reviews_list  # Блок позитивных
+            reviews_info['negative_reviews_list'] = negative_reviews_list  # Блок негативных
+            reviews_info['answered_reviews_list'] = answered_reviews_list  # Блок с ответом
             
             # Логируем статистику по найденным отзывам
             reviews_with_rating = sum(1 for r in all_reviews if r.get('review_rating', 0) > 0)
@@ -1330,15 +1771,10 @@ class GisParser(BaseParser):
             logger.info(
                 f"2GIS reviews extraction completed: total={len(all_reviews)}, "
                 f"with_rating={reviews_with_rating}, with_text={reviews_with_text}, "
-                f"positive={reviews_info['positive_reviews']}, "
-                f"negative={reviews_info['negative_reviews']}"
+                f"positive={len(positive_reviews_list)}, "
+                f"negative={len(negative_reviews_list)}, "
+                f"answered={len(answered_reviews_list)}"
             )
-            if response_time_count > 0:
-                reviews_info['avg_response_time_days'] = round(
-                    response_time_sum_days / response_time_count, 2
-                )
-            else:
-                reviews_info['avg_response_time_days'] = 0.0
 
             # -------------------------------------------------------------
             # Вариант B2: если по звёздам не удалось посчитать
@@ -1437,7 +1873,7 @@ class GisParser(BaseParser):
                 'div[class*="_4db12d"]',  # Альтернативный класс
                 'li[class*="review"]',
             ]
-            
+                
             logger.info(f"Starting scroll to load all reviews... (expected: {expected_count if expected_count > 0 else 'unknown'})")
             
             # Если знаем ожидаемое количество отзывов, используем его как ориентир
@@ -1690,16 +2126,26 @@ class GisParser(BaseParser):
             self._aggregated_data['total_rating_sum'] += card_rating_float
 
             # Отзывы
+            # ВАЖНО: используем card_reviews_count из snippet данных (если есть), это точное значение со страницы поиска
             reviews_count = card_data.get('card_reviews_count', 0) or 0
+            # Если reviews_count = 0, но есть детальные отзывы, используем их количество
+            if reviews_count == 0:
+                detailed_reviews = card_data.get('detailed_reviews', [])
+                if detailed_reviews:
+                    reviews_count = len(detailed_reviews)
+                    logger.info(f"Using detailed reviews count for aggregation (snippet was 0): {reviews_count} (card: {card_data.get('card_name', 'Unknown')})")
+            
             positive_reviews = card_data.get('card_reviews_positive', 0) or 0
             negative_reviews = card_data.get('card_reviews_negative', 0) or 0
             answered_reviews = card_data.get('card_answered_reviews_count', 0) or 0
 
-            self._aggregated_data['total_reviews_count'] += reviews_count
-            self._aggregated_data['total_positive_reviews'] += positive_reviews
-            self._aggregated_data['total_negative_reviews'] += negative_reviews
-            self._aggregated_data['total_answered_reviews_count'] += answered_reviews
-            self._aggregated_data['total_unanswered_reviews_count'] += max(0, reviews_count - answered_reviews)
+            # ВАЖНО: добавляем только если reviews_count > 0, чтобы не искажать статистику
+            if reviews_count > 0:
+                self._aggregated_data['total_reviews_count'] += reviews_count
+                self._aggregated_data['total_positive_reviews'] += positive_reviews
+                self._aggregated_data['total_negative_reviews'] += negative_reviews
+                self._aggregated_data['total_answered_reviews_count'] += answered_reviews
+                self._aggregated_data['total_unanswered_reviews_count'] += max(0, reviews_count - answered_reviews)
 
             if answered_reviews > 0:
                 self._aggregated_data['total_answered_count'] += 1
@@ -1730,6 +2176,22 @@ class GisParser(BaseParser):
                 exc_info=True
             )
 
+    def _normalize_url_for_comparison(self, url: str) -> str:
+        """Нормализует URL для сравнения"""
+        if not url:
+            return ""
+        url = url.strip().lower()
+        # Убираем протокол
+        url = re.sub(r'^https?://', '', url)
+        # Убираем www.
+        url = re.sub(r'^www\.', '', url)
+        # Убираем trailing slash
+        url = url.rstrip('/')
+        # Убираем путь и параметры (оставляем только домен)
+        url = url.split('/')[0]
+        url = url.split('?')[0]
+        return url
+    
     def _website_matches(self, card_website: str, target_website: str) -> bool:
         """
         Проверяет, соответствует ли сайт карточки целевому сайту.
@@ -1738,29 +2200,334 @@ class GisParser(BaseParser):
         if not card_website or not target_website:
             return False
         
-        def normalize_url(url: str) -> str:
-            """Нормализует URL для сравнения"""
-            url = url.strip().lower()
-            # Убираем протокол
-            url = re.sub(r'^https?://', '', url)
-            # Убираем www.
-            url = re.sub(r'^www\.', '', url)
-            # Убираем trailing slash
-            url = url.rstrip('/')
-            # Убираем путь и параметры (оставляем только домен)
-            url = url.split('/')[0]
-            url = url.split('?')[0]
-            return url
+        normalized_card = self._normalize_url_for_comparison(card_website)
+        normalized_target = self._normalize_url_for_comparison(target_website)
         
-        normalized_card = normalize_url(card_website)
-        normalized_target = normalize_url(target_website)
+        # Дополнительная проверка: если домены не совпадают точно, проверяем части домена
+        # Например, smarthome.spb.ru может совпадать с www.smarthome.spb.ru
+        if normalized_card == normalized_target:
+            return True
         
-        return normalized_card == normalized_target
+        # Проверяем, содержит ли один домен другой (для поддоменов)
+        # Например, если целевой сайт smarthome.spb.ru, а карточка имеет provayder.net - не совпадает
+        # Но если карточка имеет www.smarthome.spb.ru - должно совпадать
+        card_parts = normalized_card.split('.')
+        target_parts = normalized_target.split('.')
+        
+        # Если оба домена имеют минимум 2 части, сравниваем базовые домены
+        if len(card_parts) >= 2 and len(target_parts) >= 2:
+            # Берем последние 2 части (например, spb.ru из smarthome.spb.ru)
+            card_base = '.'.join(card_parts[-2:])
+            target_base = '.'.join(target_parts[-2:])
+            if card_base == target_base:
+                # Если базовые домены совпадают, проверяем, что основной домен тоже совпадает
+                # Например, smarthome.spb.ru и www.smarthome.spb.ru
+                card_main = card_parts[0] if len(card_parts) > 2 else card_parts[0]
+                target_main = target_parts[0] if len(target_parts) > 2 else target_parts[0]
+                # Игнорируем www и другие служебные префиксы
+                if card_main in ['www', 'www2', 'www3']:
+                    card_main = card_parts[1] if len(card_parts) > 1 else card_main
+                if target_main in ['www', 'www2', 'www3']:
+                    target_main = target_parts[1] if len(target_parts) > 1 else target_main
+                return card_main == target_main
+        
+        return False
+
+    def _quick_extract_address(self, card_url: str) -> str:
+        """
+        Быстро извлекает только адрес из карточки без полного парсинга.
+        Используется для ранней фильтрации карточек по адресу.
+        """
+        original_url = self.driver.get_current_url()
+        try:
+            self.driver.navigate(card_url)
+            time.sleep(1)  # Короткая задержка для загрузки минимального контента
+            page_source, soup = self._get_page_source_and_soup()
+            
+            address_selectors = [
+                'a[href*="/geo/"]',
+                'span._wrdavn',
+                '[class*="address"]',
+                '[class*="location"]',
+                '[itemprop="address"]',
+            ]
+            
+            address = ""
+            for selector in address_selectors:
+                address_elem = soup.select_one(selector)
+                if address_elem:
+                    raw_address = address_elem.get_text(strip=True)
+                    if raw_address and len(raw_address) > 5:
+                        address = self._normalize_address(raw_address)
+                        break
+            
+            return address
+        except Exception as e:
+            logger.warning(f"Error during quick address extraction for {card_url}: {e}")
+            return ""
+        finally:
+            # Возвращаемся на предыдущую страницу, чтобы не нарушать основной цикл
+            self.driver.navigate(original_url)
+            time.sleep(1)
+    
+    def _get_card_snippet_data(self, card_element: Tag) -> Optional[Dict[str, Any]]:
+        """
+        Извлекает данные из snippet карточки на странице поиска 2ГИС.
+        Возвращает рейтинг, количество отзывов и другую информацию, которая отображается точно.
+        """
+        try:
+            snippet_data: Dict[str, Any] = {}
+            logger.debug(f"Extracting snippet data from card element")
+            
+            # Проверяем, что элемент не пустой
+            if not card_element:
+                logger.warning("Card element is None or empty")
+                return None
+            
+            # Логируем HTML элемента для отладки (первые 500 символов)
+            card_html_preview = str(card_element)[:500] if card_element else "N/A"
+            logger.debug(f"Card element HTML preview: {card_html_preview}")
+            
+            # Название
+            name_selectors = [
+                'h1', 'h2', 'h3',
+                'a[href*="/firm/"], a[href*="/station/"]',
+                '[class*="title"]',
+                '[class*="name"]',
+            ]
+            name = ""
+            for selector in name_selectors:
+                name_elem = card_element.select_one(selector)
+                if name_elem:
+                    name = name_elem.get_text(strip=True)
+                    if name and len(name) > 2:
+                        snippet_data['card_name'] = name
+                        break
+            
+            # Рейтинг - ищем число от 1 до 5 (возможно с десятичной частью)
+            rating = ""
+            rating_value = 0.0
+            # Сначала ищем в тексте элемента рейтинг (например, "5" или "4.5")
+            card_text = card_element.get_text(separator=' ', strip=True)
+            rating_match = re.search(r'\b([1-5](?:\.\d+)?)\b', card_text)
+            if rating_match:
+                potential_rating = float(rating_match.group(1))
+                if 1.0 <= potential_rating <= 5.0:
+                    rating_value = potential_rating
+                    snippet_data['card_rating'] = rating_value
+                    logger.info(f"Found rating in card text: {rating_value}")
+            
+            # Если не нашли в тексте, пробуем селекторы
+            if rating_value == 0.0:
+                rating_selectors = [
+                    '[class*="rating"]',
+                    '[class*="star"]',
+                    '[class*="score"]',
+                    'span:contains("5"), span:contains("4"), span:contains("3")',
+                ]
+                for selector in rating_selectors:
+                    try:
+                        rating_elem = card_element.select_one(selector)
+                        if rating_elem:
+                            rating_text = rating_elem.get_text(strip=True)
+                            rating_match = re.search(r'([1-5](?:\.\d+)?)', rating_text)
+                            if rating_match:
+                                potential_rating = float(rating_match.group(1))
+                                if 1.0 <= potential_rating <= 5.0:
+                                    rating_value = potential_rating
+                                    rating = rating_text
+                                    snippet_data['card_rating'] = rating_value
+                                    logger.info(f"Found rating via selector {selector}: {rating_value}")
+                                    break
+                    except Exception as e:
+                        logger.debug(f"Error with rating selector {selector}: {e}")
+                        continue
+            
+            # Количество отзывов (очень важно - это точное значение со страницы поиска)
+            # Реальная структура: <span class="_1xhlznaa">25</span>
+            reviews_count = 0
+            reviews_selectors = [
+                'span._1xhlznaa',  # Точный селектор для количества отзывов
+                'span[class*="_1xhlznaa"]',
+                '[class*="_1xhlznaa"]',
+                'span[class*="reviews"]',  # Альтернативные селекторы
+                '[class*="reviews-count"]',
+                '[data-reviews]',  # Data-атрибут
+            ]
+            for selector in reviews_selectors:
+                try:
+                    reviews_elems = card_element.select(selector)
+                    for reviews_elem in reviews_elems:
+                        reviews_text = reviews_elem.get_text(strip=True)
+                        # Если это число напрямую (как в _1xhlznaa)
+                        if reviews_text.isdigit():
+                            reviews_count = int(reviews_text)
+                            snippet_data['card_reviews_count'] = reviews_count
+                            logger.info(f"Found reviews count via selector {selector}: {reviews_count}")
+                            break
+                        # Также проверяем data-атрибуты
+                        if reviews_elem.get('data-reviews'):
+                            try:
+                                reviews_count = int(reviews_elem.get('data-reviews'))
+                                snippet_data['card_reviews_count'] = reviews_count
+                                logger.info(f"Found reviews count via data-reviews attribute: {reviews_count}")
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                    if reviews_count > 0:
+                        break
+                except Exception as e:
+                    logger.debug(f"Error with reviews selector {selector}: {e}")
+                    continue
+            
+            # Если не нашли через точный селектор, ищем в тексте всего элемента
+            if reviews_count == 0:
+                card_text = card_element.get_text(separator=' ', strip=True)
+                logger.debug(f"Card element text preview: {card_text[:200]}")
+                
+                # Ищем паттерны типа "25 оценок" или "25 отзывов"
+                reviews_match = re.search(r'(\d+)\s*(?:оценок|отзыв)', card_text, re.IGNORECASE)
+                if reviews_match:
+                    potential_count = int(reviews_match.group(1))
+                    if 0 < potential_count < 10000:  # Разумные пределы
+                        reviews_count = potential_count
+                        snippet_data['card_reviews_count'] = reviews_count
+                        logger.info(f"Found reviews count in card text (pattern): {reviews_count}")
+                
+                # Также пробуем найти просто число рядом со словом "оценок" или "отзыв"
+                if reviews_count == 0:
+                    # Ищем числа перед словами "оценок", "отзыв", "отзывов"
+                    numbers_before_words = re.findall(r'(\d+)\s*(?:оценок|отзыв)', card_text, re.IGNORECASE)
+                    if numbers_before_words:
+                        potential_count = max(int(n) for n in numbers_before_words)
+                        if 0 < potential_count < 10000:
+                            reviews_count = potential_count
+                            snippet_data['card_reviews_count'] = reviews_count
+                            logger.info(f"Found reviews count in card text (numbers before words): {reviews_count}")
+                
+                # Последняя попытка: ищем все числа и выбираем наиболее вероятное (в разумных пределах)
+                if reviews_count == 0:
+                    numbers = re.findall(r'\b(\d+)\b', card_text)
+                    valid_numbers = [int(n) for n in numbers if 5 <= int(n) <= 1000]
+                    if valid_numbers:
+                        # Берем наибольшее число в разумных пределах
+                        reviews_count = max(valid_numbers)
+                        snippet_data['card_reviews_count'] = reviews_count
+                        logger.info(f"Found potential reviews count in card text (max number): {reviews_count}")
+            
+            # Положительные отзывы: ищем по разным селекторам (на странице поиска и на странице отзывов разные классы)
+            positive_reviews = 0
+            positive_selectors = [
+                'label._k8czfzz[title="Положительные"]',  # Старый селектор для страницы поиска
+                'label._skhdh07[title="Положительные"]',  # Новый селектор для страницы отзывов
+                'label[class*="_k8czfzz"]',
+                'label[class*="_skhdh07"]',
+                'label[title="Положительные"]',  # Универсальный по title
+            ]
+            for selector in positive_selectors:
+                try:
+                    positive_elems = card_element.select(selector)
+                    for positive_elem in positive_elems:
+                        # Проверяем title или текст
+                        title = positive_elem.get('title', '')
+                        elem_text = positive_elem.get_text(strip=True)
+                        if 'положительные' in title.lower() or 'положительные' in elem_text.lower():
+                            # Ищем число в родительском элементе или рядом
+                            parent = positive_elem.find_parent()
+                            if parent:
+                                parent_text = parent.get_text(strip=True)
+                                positive_match = re.search(r'(\d+)', parent_text)
+                                if positive_match:
+                                    positive_reviews = int(positive_match.group(1))
+                                    snippet_data['card_reviews_positive'] = positive_reviews
+                                    logger.info(f"Found positive reviews via selector {selector}: {positive_reviews}")
+                                    break
+                    if positive_reviews > 0:
+                        break
+                except Exception as e:
+                    logger.debug(f"Error with selector {selector}: {e}")
+                    continue
+            
+            # Отрицательные отзывы: ищем по точным селекторам из структуры страницы
+            # Структура: <li class="_utrabfm"><label class="_xnqndcf" title="Отрицательные">...<span class="_1iurgbx">Отрицательные</span></label></li>
+            negative_reviews = 0
+            negative_selectors = [
+                'label._xnqndcf[title="Отрицательные"]',  # Точный селектор для страницы карточки
+                'label[class*="_xnqndcf"][title="Отрицательные"]',
+                'label._movtqjn[title="Отрицательные"]',  # Альтернативный селектор
+                'label[class*="_movtqjn"][title="Отрицательные"]',
+                'label[title="Отрицательные"]',  # Универсальный по title
+            ]
+            for selector in negative_selectors:
+                try:
+                    negative_elems = card_element.select(selector)
+                    for negative_elem in negative_elems:
+                        # Проверяем title
+                        title = negative_elem.get('title', '').lower()
+                        if 'отрицательные' in title:
+                            # Ищем число в родительском элементе <li> или в тексте
+                            parent = negative_elem.find_parent('li')
+                            if parent:
+                                parent_text = parent.get_text(strip=True)
+                                # Ищем число в тексте родителя
+                                negative_match = re.search(r'(\d+)', parent_text)
+                                if negative_match:
+                                    negative_reviews = int(negative_match.group(1))
+                                    snippet_data['card_reviews_negative'] = negative_reviews
+                                    logger.info(f"Found negative reviews via selector {selector}: {negative_reviews}")
+                                    break
+                            # Если не нашли в родителе, ищем в самом элементе
+                            elem_text = negative_elem.get_text(strip=True)
+                            negative_match = re.search(r'(\d+)', elem_text)
+                            if negative_match:
+                                negative_reviews = int(negative_match.group(1))
+                                snippet_data['card_reviews_negative'] = negative_reviews
+                                logger.info(f"Found negative reviews via selector {selector} (from element text): {negative_reviews}")
+                                break
+                    if negative_reviews > 0:
+                        break
+                except Exception as e:
+                    logger.debug(f"Error with selector {selector}: {e}")
+                    continue
+            
+            # Логируем результат извлечения
+            # ВАЖНО: возвращаем данные даже если не все поля найдены (например, только reviews_count)
+            if snippet_data and len(snippet_data) > 0:
+                logger.info(f"Extracted snippet data: reviews={snippet_data.get('card_reviews_count', 0)}, "
+                          f"positive={snippet_data.get('card_reviews_positive', 0)}, "
+                          f"negative={snippet_data.get('card_reviews_negative', 0)}, "
+                          f"rating={snippet_data.get('card_rating', 0)}")
+            else:
+                logger.warning(f"No snippet data extracted (empty dict). Card text: {card_element.get_text(strip=True)[:200] if card_element else 'N/A'}")
+            
+            # ВАЖНО: возвращаем snippet_data даже если не все поля найдены, главное чтобы было хотя бы одно поле
+            return snippet_data if (snippet_data and len(snippet_data) > 0) else None
+            
+            # Сайт
+            website_selectors = [
+                'a[href^="http"]:not([href*="2gis.ru"]):not([href*="yandex.ru"])',
+                'a[class*="website"]',
+                'a[itemprop="url"]',
+            ]
+            website = ""
+            for selector in website_selectors:
+                website_elem = card_element.select_one(selector)
+                if website_elem:
+                    website = website_elem.get('href', '')
+                    if website and '2gis.ru' not in website and 'yandex.ru' not in website:
+                        snippet_data['card_website'] = website
+                        break
+            
+            return snippet_data if snippet_data else None
+        except Exception as e:
+            logger.debug(f"Error extracting snippet data from 2GIS card: {e}")
+            return None
 
     def _quick_extract_website(self, card_url: str) -> str:
         """
         Быстро извлекает только сайт из карточки без полного парсинга.
         Используется для ранней фильтрации карточек по сайту.
+        ОТКЛЮЧЕНО: фильтрация по сайту временно отключена.
         Обрабатывает ссылки через link.2gis.ru, извлекая реальный URL.
         """
         original_url = self.driver.get_current_url()
@@ -1881,12 +2648,15 @@ class GisParser(BaseParser):
             self.driver.navigate(original_url)
             time.sleep(1)
 
-    def parse(self, url: str, search_query_site: Optional[str] = None) -> Dict[str, Any]:
+    def parse(self, url: str, search_query_site: Optional[str] = None, search_query_address: Optional[str] = None) -> Dict[str, Any]:
         logger.info(f"Starting 2GIS parser for URL: {url}")
         self._url = url
         self._target_website = search_query_site  # Сохраняем целевой сайт для фильтрации
+        self._target_address = search_query_address  # Сохраняем целевой адрес для фильтрации
         if self._target_website:
             logger.info(f"Target website for filtering: {self._target_website}")
+        if self._target_address:
+            logger.info(f"Target address for filtering: {self._target_address}")
 
         self._update_progress("Инициализация парсера 2GIS...")
 
@@ -1961,6 +2731,12 @@ class GisParser(BaseParser):
 
             all_card_urls: set[str] = set()
             max_pages = 20
+            
+            # Словари для раннего извлечения адресов и сайтов из snippets (оптимизация)
+            card_url_to_address: Dict[str, str] = {}
+            card_url_to_website: Dict[str, str] = {}
+            # Словарь для хранения данных из snippet (рейтинг, количество отзывов - точные данные со страницы поиска)
+            card_url_to_snippet_data: Dict[str, Dict[str, Any]] = {}
 
             pages_to_process: List[str] = [url]
             if pagination_urls:
@@ -1995,6 +2771,55 @@ class GisParser(BaseParser):
                     # После прокрутки обновляем DOM и собираем ссылки карточек
                     page_source, soup = self._get_page_source_and_soup()
                     page_urls = self._get_links()
+                    
+                    # ОПТИМИЗАЦИЯ: Одновременно извлекаем адреса и сайты из snippets для ранней фильтрации
+                    for selector in self._card_selectors:
+                        card_elements = soup.select(selector)
+                        for card_elem in card_elements:
+                            link_elem = card_elem.select_one('a[href*="/firm/"], a[href*="/station/"]')
+                            if not link_elem:
+                                continue
+                            href = link_elem.get('href', '')
+                            if not href:
+                                continue
+                            if not href.startswith('http'):
+                                href = urllib.parse.urljoin("https://2gis.ru", href)
+                            
+                            if href not in page_urls:
+                                continue
+                            
+                            # Извлекаем адрес из snippet (если нужно)
+                            if self._target_address and href not in card_url_to_address:
+                                address_elem = card_elem.select_one('a[href*="/geo/"], span._wrdavn, [class*="address"], [class*="location"]')
+                                if address_elem:
+                                    address = address_elem.get_text(strip=True)
+                                    if address and len(address) > 5:
+                                        card_url_to_address[href] = self._normalize_address(address)
+                            
+                            # Извлекаем данные из snippet (сайт, рейтинг, количество отзывов)
+                            snippet_data = self._get_card_snippet_data(card_elem)
+                            if snippet_data and len(snippet_data) > 0:
+                                logger.info(f"Extracted snippet data for {href[:80]}: reviews={snippet_data.get('card_reviews_count', 0)}, rating={snippet_data.get('card_rating', 0)}")
+                            else:
+                                logger.warning(f"Could not extract snippet data for {href[:80]}, card element text preview: {card_elem.get_text(strip=True)[:100] if card_elem else 'N/A'}")
+                            if snippet_data and len(snippet_data) > 0:
+                                # Нормализуем URL для единообразия (убираем query параметры и фрагменты)
+                                normalized_href = href.split('?')[0].split('#')[0].rstrip('/')
+                                # Сохраняем все данные из snippet для использования в агрегированной информации
+                                card_url_to_snippet_data[normalized_href] = snippet_data
+                                # Логируем для отладки
+                                snippet_reviews = snippet_data.get('card_reviews_count', 0)
+                                if snippet_reviews > 0:
+                                    logger.info(f"Extracted snippet data for {normalized_href[:80]}: reviews={snippet_reviews}, rating={snippet_data.get('card_rating', 0)}")
+                                # Также сохраняем с оригинальным href на случай, если URL не нормализуется одинаково
+                                card_url_to_snippet_data[href] = snippet_data
+                                
+                                # Извлекаем сайт из snippet (если нужно)
+                                if not self._target_address and self._target_website and href not in card_url_to_website:
+                                    website = snippet_data.get('card_website', '')
+                                    if website:
+                                        card_url_to_website[href] = website
+                    
                     all_card_urls.update(page_urls)
 
                     new_cards = len(all_card_urls) - initial_card_count
@@ -2022,33 +2847,101 @@ class GisParser(BaseParser):
                     'aggregated_info': aggregated_info,
                 }
 
-            # ОПТИМИЗАЦИЯ: Ранняя фильтрация по сайту (если указан целевой сайт)
-            # Сохраняем извлеченные сайты для переиспользования при полном парсинге
-            card_url_to_website: Dict[str, str] = {}
+            # ОПТИМИЗАЦИЯ: Ранняя фильтрация по адресу (если указан целевой адрес)
+            # Используем уже извлеченные адреса из snippets (извлечены при сборе карточек)
             filtered_card_urls = card_urls
-            if self._target_website:
-                logger.info(f"Применяю раннюю фильтрацию по сайту: {self._target_website}")
-                logger.info(f"Быстрая проверка сайтов для {len(filtered_card_urls)} карточек...")
+            
+            if self._target_address:
+                logger.info(f"Применяю раннюю фильтрацию по адресу: {self._target_address}")
+                logger.info(f"Использую адреса, извлеченные при сборе карточек для {len(filtered_card_urls)} карточек...")
                 original_count = len(filtered_card_urls)
                 matching_urls = []
                 
-                for idx, card_url in enumerate(filtered_card_urls[:self._max_records], 1):
-                    if self._is_stopped():
-                        break
-                    if idx % 10 == 0:
-                        self._update_progress(f"Проверка сайтов: {idx}/{min(len(filtered_card_urls), self._max_records)}")
-                    
-                    website = self._quick_extract_website(card_url)
-                    # Сохраняем извлеченный сайт для переиспользования
-                    card_url_to_website[card_url] = website
-                    if self._website_matches(website, self._target_website):
-                        matching_urls.append(card_url)
-                        logger.info(f"Карточка {idx} прошла фильтр по сайту: {card_url} -> {website}")
-                    else:
-                        logger.info(f"Карточка {idx} исключена (сайт не совпадает): {card_url} -> {website or '(нет сайта)'}")
+                # Фильтруем карточки по уже извлеченным адресам
+                for card_url in filtered_card_urls:
+                    address = card_url_to_address.get(card_url, '')
+                    if address:
+                        if self._address_matches(address, self._target_address):
+                            matching_urls.append(card_url)
+                            logger.info(f"Карточка прошла фильтр по адресу: {card_url[:80]} -> {address[:50]}")
+                        else:
+                            logger.debug(f"Карточка исключена (адрес не совпадает): {card_url[:80]} -> {address[:50]}")
+                
+                # Если не все карточки были найдены на страницах поиска, проверяем остальные
+                remaining = [url for url in filtered_card_urls if url not in card_url_to_address]
+                if remaining:
+                    logger.info(f"Проверяю адреса для оставшихся {len(remaining)} карточек (переход на детальные страницы)...")
+                    self._update_progress(f"Ранняя фильтрация по адресу: проверка {len(remaining)} карточек...")
+                    for idx, card_url in enumerate(remaining[:self._max_records], 1):
+                        if self._is_stopped():
+                            break
+                        if idx % 10 == 0:
+                            self._update_progress(f"Ранняя фильтрация по адресу: {idx}/{len(remaining)}")
+                        
+                        # Быстро извлекаем адрес, переходя на карточку
+                        try:
+                            address = self._quick_extract_address(card_url)
+                            card_url_to_address[card_url] = address
+                            if self._address_matches(address, self._target_address):
+                                matching_urls.append(card_url)
+                                logger.info(f"Карточка прошла фильтр по адресу: {card_url[:80]} -> {address[:50]}")
+                            else:
+                                logger.debug(f"Карточка исключена (адрес не совпадает): {card_url[:80]} -> {address[:50]}")
+                        except Exception as e:
+                            logger.warning(f"Ошибка при извлечении адреса для {card_url}: {e}")
+                            continue
                 
                 filtered_card_urls = matching_urls
-                logger.info(f"Ранняя фильтрация завершена: {original_count} -> {len(filtered_card_urls)} карточек (осталось {len(filtered_card_urls)} для полного парсинга)")
+                logger.info(f"Ранняя фильтрация по адресу завершена: {original_count} -> {len(filtered_card_urls)} карточек (осталось {len(filtered_card_urls)} для полного парсинга)")
+            
+            # ОПТИМИЗАЦИЯ: Ранняя фильтрация по сайту (если адрес НЕ указан, но сайт указан)
+            # Используем уже извлеченные сайты из snippets (извлечены при сборе карточек)
+            if not self._target_address and self._target_website:
+                logger.info(f"Применяю раннюю фильтрацию по сайту: {self._target_website}")
+                logger.info(f"Использую сайты, извлеченные при сборе карточек для {len(filtered_card_urls)} карточек...")
+                original_count = len(filtered_card_urls)
+                matching_urls = []
+                
+                # Фильтруем карточки по уже извлеченным сайтам
+                for card_url in filtered_card_urls:
+                    website = card_url_to_website.get(card_url, '')
+                    if website:
+                        normalized_card = self._normalize_url_for_comparison(website)
+                        normalized_target = self._normalize_url_for_comparison(self._target_website)
+                        if self._website_matches(website, self._target_website):
+                            matching_urls.append(card_url)
+                            logger.info(f"Карточка прошла фильтр по сайту: {card_url[:80]} -> {website[:50]} (нормализовано: {normalized_card} == {normalized_target})")
+                        else:
+                            logger.warning(f"Карточка исключена (сайт не совпадает): {card_url[:80]} -> {website[:50]} (нормализовано: {normalized_card} != {normalized_target}, целевой: {self._target_website})")
+                    else:
+                        logger.warning(f"Карточка не имеет извлеченного сайта: {card_url[:80]}, будет проверена позже")
+                
+                # Если не все карточки были найдены на страницах поиска, проверяем остальные
+                remaining = [url for url in filtered_card_urls if url not in card_url_to_website]
+                if remaining:
+                    logger.info(f"Проверяю сайты для оставшихся {len(remaining)} карточек (переход на детальные страницы)...")
+                    self._update_progress(f"Ранняя фильтрация по сайту: проверка {len(remaining)} карточек...")
+                    for idx, card_url in enumerate(remaining[:self._max_records], 1):
+                        if self._is_stopped():
+                            break
+                        if idx % 10 == 0:
+                            self._update_progress(f"Ранняя фильтрация по сайту: {idx}/{len(remaining)}")
+                        
+                        # Быстро извлекаем сайт, переходя на карточку
+                        try:
+                            website = self._quick_extract_website(card_url)
+                            card_url_to_website[card_url] = website
+                            if self._website_matches(website, self._target_website):
+                                matching_urls.append(card_url)
+                                logger.info(f"Карточка прошла фильтр по сайту: {card_url[:80]} -> {website[:50]}")
+                            else:
+                                logger.debug(f"Карточка исключена (сайт не совпадает): {card_url[:80]} -> {website[:50]}")
+                        except Exception as e:
+                            logger.warning(f"Ошибка при извлечении сайта для {card_url}: {e}")
+                            continue
+                
+                filtered_card_urls = matching_urls
+                logger.info(f"Ранняя фильтрация по сайту завершена: {original_count} -> {len(filtered_card_urls)} карточек (осталось {len(filtered_card_urls)} для полного парсинга)")
 
             self._update_progress(f"Сканирование карточек: 0/{len(filtered_card_urls)}")
 
@@ -2084,11 +2977,11 @@ class GisParser(BaseParser):
                     break
                 try:
                     self._update_progress(
-                        f"Сканирование карточек: {idx}/{min(len(card_urls), self._max_records)}"
+                            f"Сканирование карточек: {idx}/{min(len(filtered_card_urls), self._max_records)}"
                     )
 
                     logger.info(
-                        f"Processing card {idx}/{min(len(card_urls), self._max_records)}: {card_url}"
+                        f"Processing card {idx}/{min(len(filtered_card_urls), self._max_records)}: {card_url}"
                     )
                     self.driver.navigate(card_url)
                     time.sleep(2)
@@ -2141,7 +3034,57 @@ class GisParser(BaseParser):
                                 rating_value = filled_stars
                                 rating = str(filled_stars)
 
-                    # Телефон
+                    # Телефон - сначала кликаем на кнопку "показать телефон", если она есть
+                    try:
+                        # Ищем и кликаем кнопку "показать телефон" через JavaScript
+                        show_phone_script = """
+                        var selectors = [
+                            'button[class*="phone"]',
+                            'a[class*="phone"]',
+                            'span[class*="phone"]',
+                            '[class*="показать"]',
+                            '[class*="телефон"]',
+                            'button[aria-label*="телефон"]',
+                            'button[aria-label*="phone"]',
+                            '[data-qa*="phone"]',
+                            '[data-test*="phone"]',
+                        ];
+                        for (var s = 0; s < selectors.length; s++) {
+                            var buttons = document.querySelectorAll(selectors[s]);
+                            for (var i = 0; i < buttons.length; i++) {
+                                var btn = buttons[i];
+                                if (!btn || btn.offsetParent === null) continue;
+                                var text = (btn.textContent || btn.innerText || btn.getAttribute('aria-label') || '').toLowerCase();
+                                if (text.includes('показать') || text.includes('телефон') || text.includes('номер') || 
+                                    text.includes('phone') || text.includes('show')) {
+                                    try {
+                                        btn.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                        btn.click();
+                                        return true;
+                                    } catch(e) {
+                                        try {
+                                            var event = new MouseEvent('click', {bubbles: true, cancelable: true});
+                                            btn.dispatchEvent(event);
+                                            return true;
+                                        } catch(e2) {}
+                                    }
+                                }
+                            }
+                        }
+                        return false;
+                        """
+                        clicked = self.driver.execute_script(show_phone_script)
+                        if clicked:
+                            time.sleep(1.5)  # Ждем загрузки телефона
+                            # Обновляем soup после клика
+                            page_source, soup = self._get_page_source_and_soup()
+                            logger.info("Clicked 'show phone' button, updated page source")
+                        else:
+                            logger.debug("No 'show phone' button found or click failed")
+                    except Exception as phone_click_err:
+                        logger.warning(f"Error trying to click show phone button: {phone_click_err}")
+                    
+                    # Теперь извлекаем телефон
                     phone = ""
                     for selector in phone_selectors:
                         phone_elem = soup.select_one(selector)
@@ -2149,6 +3092,15 @@ class GisParser(BaseParser):
                             phone = phone_elem.get_text(strip=True)
                             if not phone and phone_elem.get('href'):
                                 phone = phone_elem.get('href').replace('tel:', '').strip()
+                            if phone:
+                                break
+                    
+                    # Если телефон не найден, пробуем найти через data-атрибуты или скрытые элементы
+                    if not phone:
+                        # Ищем элементы с data-phone или data-tel
+                        phone_data_elems = soup.select('[data-phone], [data-tel], [data-number]')
+                        for elem in phone_data_elems:
+                            phone = elem.get('data-phone') or elem.get('data-tel') or elem.get('data-number')
                             if phone:
                                 break
 
@@ -2173,27 +3125,109 @@ class GisParser(BaseParser):
                         logger.warning(f"Skipping 2GIS card without name: {card_url}")
                         continue
 
-                    # Используем фактическое количество отзывов из details, а не reviews_count
-                    # Это гарантирует, что card_reviews_count соответствует количеству detailed_reviews
+                    # Используем данные из snippet для агрегированной информации (точные данные со страницы поиска)
+                    # Для детальных отзывов используем данные из парсинга страницы карточки
                     detailed_reviews_list = reviews_data.get('details', [])
-                    actual_reviews_count = len(detailed_reviews_list) if detailed_reviews_list else reviews_data.get('reviews_count', 0)
+                    # Нормализуем card_url для поиска в словаре (убираем query параметры и фрагменты)
+                    normalized_card_url = card_url.split('?')[0].split('#')[0].rstrip('/')
+                    snippet_data = card_url_to_snippet_data.get(normalized_card_url, {})
+                    if not snippet_data:
+                        # Пробуем найти по оригинальному URL
+                        snippet_data = card_url_to_snippet_data.get(card_url, {})
+                    if not snippet_data:
+                        # Пробуем найти по URL без последнего слэша
+                        alt_url = normalized_card_url.rstrip('/')
+                        snippet_data = card_url_to_snippet_data.get(alt_url, {})
+                    if not snippet_data:
+                        # Пробуем найти по любому варианту URL, который содержит ID фирмы
+                        firm_id_match = re.search(r'/firm/(\d+)', card_url)
+                        if firm_id_match:
+                            firm_id = firm_id_match.group(1)
+                            for key, data in card_url_to_snippet_data.items():
+                                if firm_id in key:
+                                    snippet_data = data
+                                    logger.info(f"Found snippet data by firm ID {firm_id}: reviews={snippet_data.get('card_reviews_count', 0)}")
+                                    break
                     
+                    if snippet_data:
+                        logger.info(f"Found snippet data for card {card_url[:80]}: reviews={snippet_data.get('card_reviews_count', 0)}, rating={snippet_data.get('card_rating', 0)}")
+                    else:
+                        logger.warning(f"No snippet data found for card {card_url[:80]}, normalized={normalized_card_url[:80]}. Available keys: {list(card_url_to_snippet_data.keys())[:3]}")
+                    
+                    # Для агрегированной информации используем данные из snippet (если есть)
+                    # Это гарантирует точность данных, как на странице поиска
+                    snippet_reviews_count = snippet_data.get('card_reviews_count', 0)
+                    snippet_rating = snippet_data.get('card_rating', 0.0)
+                    snippet_positive = snippet_data.get('card_reviews_positive', 0)
+                    snippet_negative = snippet_data.get('card_reviews_negative', 0)
+                    
+                    # Если есть данные из snippet - используем их для агрегированной информации
+                    # Иначе используем данные из детального парсинга
+                    # ВАЖНО: snippet данные приоритетнее, так как они точнее отражают реальное количество на странице поиска
+                    if snippet_reviews_count > 0:
+                        actual_reviews_count = snippet_reviews_count
+                        logger.info(f"Using snippet reviews count for aggregation: {actual_reviews_count} (card: {name})")
+                    else:
+                        # Используем количество из детального парсинга
+                        detailed_count = len(detailed_reviews_list) if detailed_reviews_list else 0
+                        reviews_data_count = reviews_data.get('reviews_count', 0) if reviews_data else 0
+                        # Берем максимальное значение из доступных
+                        actual_reviews_count = max(detailed_count, reviews_data_count)
+                        logger.info(f"Using detailed reviews count for aggregation: {actual_reviews_count} (detailed={detailed_count}, reviews_data={reviews_data_count}, card: {name})")
+                    
+                    # Для рейтинга используем данные из структуры страницы карточки (приоритет), затем из snippet
+                    card_rating_from_page = reviews_data.get('card_rating_from_page', 0.0)
+                    if card_rating_from_page > 0:
+                        rating_value = card_rating_from_page
+                        rating = str(card_rating_from_page)
+                        logger.info(f"Using card rating from page structure: {rating_value} (card: {name})")
+                    elif snippet_rating and snippet_rating > 0:
+                        rating_value = snippet_rating
+                        rating = str(snippet_rating)
+                        logger.info(f"Using snippet rating for aggregation: {rating_value} (card: {name})")
+                    
+                    # Для положительных и отрицательных отзывов используем данные из структуры страницы (приоритет), затем из snippet
+                    # Извлекаем из reviews_data списки отзывов по блокам
+                    positive_reviews_list = reviews_data.get('positive_reviews_list', [])
+                    negative_reviews_list = reviews_data.get('negative_reviews_list', [])
+                    answered_reviews_list = reviews_data.get('answered_reviews_list', [])
+                    
+                    # Используем количество из структуры страницы, если есть
+                    if snippet_positive > 0:
+                        reviews_data['positive_reviews'] = snippet_positive
+                        logger.info(f"Using snippet positive reviews for aggregation: {snippet_positive} (card: {name})")
+                    elif len(positive_reviews_list) > 0:
+                        # Используем количество из распарсенных позитивных отзывов
+                        reviews_data['positive_reviews'] = len(positive_reviews_list)
+                        logger.info(f"Using parsed positive reviews count: {len(positive_reviews_list)} (card: {name})")
+                    
+                    if snippet_negative > 0:
+                        reviews_data['negative_reviews'] = snippet_negative
+                        logger.info(f"Using snippet negative reviews for aggregation: {snippet_negative} (card: {name})")
+                    elif len(negative_reviews_list) > 0:
+                        # Используем количество из распарсенных негативных отзывов
+                        reviews_data['negative_reviews'] = len(negative_reviews_list)
+                        logger.info(f"Using parsed negative reviews count: {len(negative_reviews_list)} (card: {name})")
+
                     card_data: Dict[str, Any] = {
                         'card_name': name,
                         'card_address': address,
                         'card_rating': rating,
-                        'card_reviews_count': actual_reviews_count,
+                        'card_reviews_count': actual_reviews_count,  # Используем данные из структуры страницы для агрегированной информации
                         'card_website': website,
                         'card_phone': phone,
                         'card_rubrics': "",
                         'card_response_status': "UNKNOWN",
-                        'card_avg_response_time': reviews_data.get('avg_response_time_days', 0.0),
+                        'card_avg_response_time': reviews_data.get('avg_response_time_days', 0.0),  # Среднее время ответа для блока "С ответом"
                         'card_reviews_positive': reviews_data.get('positive_reviews', 0),
                         'card_reviews_negative': reviews_data.get('negative_reviews', 0),
                         'card_reviews_texts': "; ".join(reviews_data.get('texts', [])),
-                        'card_answered_reviews_count': reviews_data.get('answered_count', 0),
-                        'card_unanswered_reviews_count': reviews_data.get('unanswered_count', 0),
-                        'detailed_reviews': detailed_reviews_list,
+                        'card_answered_reviews_count': reviews_data.get('answered_count', 0),  # Используем значение из структуры страницы (если найдено)
+                        'card_unanswered_reviews_count': max(0, actual_reviews_count - reviews_data.get('answered_count', 0)),  # Вычисляем на основе структуры страницы
+                        'detailed_reviews': detailed_reviews_list,  # Все отзывы
+                        'positive_reviews_list': positive_reviews_list,  # Блок позитивных отзывов
+                        'negative_reviews_list': negative_reviews_list,  # Блок негативных отзывов
+                        'answered_reviews_list': answered_reviews_list,  # Блок отзывов с ответом (для вычисления среднего времени ответа)
                         'source': '2gis',
                     }
                     
@@ -2201,6 +3235,9 @@ class GisParser(BaseParser):
                     detailed_reviews_count = len(card_data.get('detailed_reviews', []))
                     if detailed_reviews_count > 0:
                         logger.info(f"Card '{name}': {detailed_reviews_count} detailed reviews saved to card_data")
+
+                    # Фильтрация по адресу уже выполнена на раннем этапе, дополнительная проверка не нужна
+                    # Фильтрация по сайту отключена
 
                     card_data_list.append(card_data)
 

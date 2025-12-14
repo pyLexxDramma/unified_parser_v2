@@ -43,6 +43,22 @@
                    value="{{ last_form.company_site if last_form and last_form.company_site else 'http://' }}">
         </div>
 
+        {# Закомментировано по запросу пользователя
+        <div class="form-group">
+            <label for="company_address">Введите адрес компании (опционально, для точности парсинга):</label>
+            <input type="text"
+                   id="company_address"
+                   name="company_address"
+                   placeholder="Например: ул. Ленина, 10 или Нижний Сусальный пер., 5"
+                   maxlength="200"
+                   value="{{ last_form.company_address if last_form and last_form.company_address else '' }}">
+            <small style="color: #666; font-size: 0.9em;">
+                Если указан адрес - фильтрация будет по адресу (для точности). 
+                Если адрес не указан - будет использована фильтрация по сайту (для сужения объема парсинга).
+            </small>
+        </div>
+        #}
+
         <div class="form-group">
             <label for="source">Выберите источник:</label>
             <select id="source" name="source" required>
@@ -63,6 +79,9 @@
                     2GIS
                 </option>
             </select>
+            <div id="source_warning" style="display: none; margin-top: 8px; padding: 10px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; color: #856404; font-size: 0.9em;">
+                <strong>⚠️ Важно:</strong> При выборе обоих источников убедитесь, что название фирмы имеет <strong>идентичное наименование</strong> в обоих сервисах (Яндекс и 2GIS). В противном случае парсинг может быть некорректным.
+            </div>
         </div>
 
         <div class="form-group">
@@ -400,6 +419,22 @@
         searchScopeSelect.addEventListener('change', updateLocationVisibility);
         // Инициализируем видимость при загрузке
         updateLocationVisibility();
+        
+        // Показываем предупреждение при выборе "Оба источника"
+        const sourceSelect = document.getElementById('source');
+        const sourceWarning = document.getElementById('source_warning');
+        if (sourceSelect && sourceWarning) {
+            function updateSourceWarning() {
+                if (sourceSelect.value === 'both') {
+                    sourceWarning.style.display = 'block';
+                } else {
+                    sourceWarning.style.display = 'none';
+                }
+            }
+            sourceSelect.addEventListener('change', updateSourceWarning);
+            // Инициализируем при загрузке
+            updateSourceWarning();
+        }
 
         // Обработка добавления пользовательского города
         (function initCustomCityAdder() {

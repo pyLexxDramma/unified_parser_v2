@@ -184,6 +184,7 @@
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
                 {% if task.status == 'COMPLETED' %}
                     <a href="{{ (url_prefix or '') }}/tasks/{{ task.task_id }}/download-pdf" class="btn-download-pdf" style="padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 5px; font-weight: 600;">📥 Скачать PDF отчет</a>
+                    <a href="{{ (url_prefix or '') }}/tasks/{{ task.task_id }}/download-json" class="btn-download-json" style="padding: 10px 20px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: 600;">📥 Скачать JSON</a>
                 {% endif %}
                 {# Кнопка «Повторить последний парсинг» тоже относится к управлению задачей и скрыта.
                 Если нужно вернуть — раскомментировать блок ниже.
@@ -222,15 +223,9 @@
                         <li>Средняя скорость ответа: 
                             <span style="color:#FFC107;">
                                 {% if yandex_stats.get('aggregated_avg_response_time', 0) > 0 %}
-                                    {% if yandex_stats.get('aggregated_avg_response_time', 0) < 7 %}
-                                        {{ "%.0f"|format(yandex_stats.get('aggregated_avg_response_time', 0)) }} дней
-                                    {% elif yandex_stats.get('aggregated_avg_response_time', 0) < 30 %}
-                                        1 неделя
-                                    {% else %}
-                                        1 месяц
-                                    {% endif %}
-                                {% elif y_ans > 0 %}
-                                    недоступно — Яндекс не показывает дату ответа, ориентируйтесь по доле отвеченных
+                                    {{ "%.1f"|format(yandex_stats.get('aggregated_avg_response_time', 0)) }} дн.
+                                {% elif y_ans > 0 and y_total > 0 %}
+                                    {{ "%.1f"|format(y_ans_percent) }}% отвечено (дата ответа недоступна)
                                 {% else %}
                                     —
                                 {% endif %}
@@ -247,14 +242,14 @@
                     <p><strong>2ГИС:</strong></p>
                     <ul style="list-style-type: none; padding-left: 0; margin-bottom: 1rem;">
                         <li>Количество карточек: <span style="color:#FFC107;">{{ gis_stats.get('total_cards_found', 0) }}</span></li>
-                        <li>Общий рейтинг (примерный): <span style="color:#FFC107;">{% if gis_stats.get('aggregated_rating', 0) and gis_stats.get('aggregated_rating', 0) > 0 %}{{ "%.1f"|format(gis_stats.get('aggregated_rating', 0)) }} {% if gis_stats.get('aggregated_rating', 0) >= 4 %}★★★★{% elif gis_stats.get('aggregated_rating', 0) >= 3 %}★★★{% elif gis_stats.get('aggregated_rating', 0) >= 2 %}★★{% elif gis_stats.get('aggregated_rating', 0) >= 1 %}★{% endif %}{% else %}—{% endif %}</span></li>
+                        <li>Общий рейтинг: <span style="color:#FFC107;">{% if gis_stats.get('aggregated_rating', 0) and gis_stats.get('aggregated_rating', 0) > 0 %}{{ "%.1f"|format(gis_stats.get('aggregated_rating', 0)) }} {% if gis_stats.get('aggregated_rating', 0) >= 4 %}★★★★{% elif gis_stats.get('aggregated_rating', 0) >= 3 %}★★★{% elif gis_stats.get('aggregated_rating', 0) >= 2 %}★★{% elif gis_stats.get('aggregated_rating', 0) >= 1 %}★{% endif %}{% else %}—{% endif %}</span></li>
                         <li>Всего отзывов: <span style="color:#FFC107;">{{ gis_stats.get('aggregated_reviews_count', 0) }}</span></li>
                         <li>Отвечено на: <span style="color:#FFC107;">{{ gis_stats.get('aggregated_answered_reviews_count', 0) }}</span></li>
-                        <li>Средняя скорость ответа: <span style="color:#FFC107;">{% if gis_stats.get('aggregated_avg_response_time', 0) > 0 %}{% if gis_stats.get('aggregated_avg_response_time', 0) < 7 %}{{ "%.0f"|format(gis_stats.get('aggregated_avg_response_time', 0)) }} дней{% elif gis_stats.get('aggregated_avg_response_time', 0) < 30 %}1 неделя{% else %}1 месяц{% endif %}{% else %}—{% endif %}</span></li>
+                        <li>Средняя скорость ответа: <span style="color:#FFC107;">{% if gis_stats.get('aggregated_avg_response_time', 0) > 0 %}{{ "%.1f"|format(gis_stats.get('aggregated_avg_response_time', 0)) }} дн.{% else %}—{% endif %}</span></li>
                         {% set gis_neg = gis_stats.get('aggregated_negative_reviews', 0) %}
                         {% set gis_pos = gis_stats.get('aggregated_positive_reviews', 0) %}
-                        <li>Негативных отзывов (1–2⭐, оценочно): <span style="color:#FFC107;">{{ gis_neg }}</span></li>
-                        <li>Позитивных отзывов (5⭐, оценочно по фильтрам 2ГИС): <span style="color:#FFC107;">{{ gis_pos }}</span></li>
+                        <li>Негативных отзывов (1–2⭐): <span style="color:#FFC107;">{{ gis_neg }}</span></li>
+                        <li>Позитивных отзывов (4–5⭐): <span style="color:#FFC107;">{{ gis_pos }}</span></li>
                     </ul>
                 {% endif %}
             </div>
@@ -429,8 +424,8 @@
                                 {% endif %}
                             </p>
                             <p><strong>Среднее время ответа:</strong>
-                                {% if card.get('card_avg_response_time') %}
-                                    {{ card.get('card_avg_response_time') }} дн.
+                                {% if card.get('card_avg_response_time') and card.get('card_avg_response_time') > 0 %}
+                                    {{ "%.1f"|format(card.get('card_avg_response_time')) }} дн.
                                 {% else %}
                                     —
                                 {% endif %}
@@ -440,13 +435,53 @@
                             <p><strong>Отрицательных отзывов (1–2⭐):</strong> {{ card.get('card_reviews_negative') or 0 }}</p>
                         </div>
                     </div>
-                    {% set reviews = card.get('detailed_reviews') %}
-                    {% if reviews %}
-                        <div class="reviews-block">
-                            <h4>Отзывы ({{ reviews|length }})</h4>
-                            <ul class="review-list" style="list-style: none; padding: 0;">
-                                {% for review in reviews %}
-                                    <li style="padding: 8px 0; border-bottom: 1px solid #eee;">
+                    {# Все отзывы с фильтрацией по чекбоксам #}
+                    {% set all_reviews = card.get('detailed_reviews') or [] %}
+                    {% if all_reviews %}
+                        <div class="reviews-block" style="margin-top: 15px; padding: 15px; background-color: #f9f9f9; border-radius: 4px;">
+                            <div style="margin-bottom: 15px; padding: 10px; background-color: #fff; border: 1px solid #ddd; border-radius: 4px;">
+                                <h4 style="margin: 0 0 10px 0; color: #333;">Фильтр отзывов:</h4>
+                                {% set answered_count = card.get('card_answered_reviews_count', 0) or 0 %}
+                                {% set total_count = card.get('card_reviews_count', 0) or 0 %}
+                                {% set unanswered_count = total_count - answered_count %}
+                                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                    <button type="button" 
+                                            class="review-filter-btn active" 
+                                            data-card-id="{{ loop.index0 }}" 
+                                            data-filter="all" 
+                                            onclick="filterReviewsByButton('{{ loop.index0 }}', 'all')"
+                                            style="padding: 8px 16px; font-size: 0.95em; border: 2px solid #2196F3; background-color: #2196F3; color: white; border-radius: 4px; cursor: pointer; transition: all 0.3s;">
+                                        Все отзывы ({{ total_count }})
+                                    </button>
+                                    <button type="button" 
+                                            class="review-filter-btn" 
+                                            data-card-id="{{ loop.index0 }}" 
+                                            data-filter="answered" 
+                                            onclick="filterReviewsByButton('{{ loop.index0 }}', 'answered')"
+                                            style="padding: 8px 16px; font-size: 0.95em; border: 2px solid #4CAF50; background-color: #fff; color: #4CAF50; border-radius: 4px; cursor: pointer; transition: all 0.3s;">
+                                        Отзывы с ответом ({{ answered_count }})
+                                    </button>
+                                    <button type="button" 
+                                            class="review-filter-btn" 
+                                            data-card-id="{{ loop.index0 }}" 
+                                            data-filter="unanswered" 
+                                            onclick="filterReviewsByButton('{{ loop.index0 }}', 'unanswered')"
+                                            style="padding: 8px 16px; font-size: 0.95em; border: 2px solid #FF9800; background-color: #fff; color: #FF9800; border-radius: 4px; cursor: pointer; transition: all 0.3s;">
+                                        Отзывы без ответа ({{ unanswered_count }})
+                                    </button>
+                                </div>
+                                {% if card.get('card_avg_response_time') and card.get('card_avg_response_time') > 0 %}
+                                    <p style="margin: 10px 0 0 0; font-size: 0.9em; color: #555;">
+                                        <strong>Среднее время ответа:</strong> {{ "%.1f"|format(card.get('card_avg_response_time')) }} дн.
+                                    </p>
+                                {% endif %}
+                            </div>
+                            <ul class="review-list" id="reviews-list-{{ loop.index0 }}" style="list-style: none; padding: 0; margin: 0;">
+                                {% for review in all_reviews %}
+                                    <li class="review-item" 
+                                        data-card-id="{{ loop.index0 }}"
+                                        data-has-response="{{ 'true' if review.get('has_response', False) else 'false' }}"
+                                        style="padding: 8px 0; border-bottom: 1px solid #ddd;">
                                         <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                                             {% if review.review_rating and review.review_rating|float > 0 %}
                                                 {% set rating = review.review_rating|float %}
@@ -468,7 +503,9 @@
                                                 {% elif rating >= 1.0 %}
                                                     {% set stars = "⭐" %}
                                                 {% endif %}
-                                                <span style="font-size: 1.1em;">{{ stars }}</span>
+                                                {% if stars %}
+                                                    <span style="font-size: 1.1em;">{{ stars }}</span>
+                                                {% endif %}
                                                 <span style="font-size: 0.9em; color: #666;">({{ "%.1f"|format(rating) }})</span>
                                             {% endif %}
                                             {% if review.review_author %}
@@ -477,11 +514,20 @@
                                             {% if review.review_date %}
                                                 <span style="font-size: 0.85em; color: #888;">{{ review.review_date }}</span>
                                             {% endif %}
+                                            {% if review.get('has_response', False) and review.response_date %}
+                                                <span style="font-size: 0.85em; color: #2196F3; font-weight: 500;">→ Ответ: {{ review.response_date }}</span>
+                                            {% endif %}
                                         </div>
                                         {% if review.review_text %}
                                             <p style="margin: 5px 0 0 0; color: #333; font-size: 0.95em;">{{ review.review_text }}</p>
                                         {% else %}
                                             <p style="margin: 5px 0 0 0; color: #777; font-size: 0.9em; font-style: italic;">отзыв без текста</p>
+                                        {% endif %}
+                                        {% if review.get('has_response', False) and review.response_text %}
+                                            <div style="margin: 8px 0 0 15px; padding: 8px; background-color: #e3f2fd; border-left: 3px solid #2196F3; border-radius: 3px;">
+                                                <p style="margin: 0; font-size: 0.9em; color: #1976D2;"><strong>Ответ компании:</strong></p>
+                                                <p style="margin: 5px 0 0 0; color: #333; font-size: 0.9em;">{{ review.response_text }}</p>
+                                            </div>
                                         {% endif %}
                                     </li>
                                 {% endfor %}
@@ -532,8 +578,8 @@
                                         {% endif %}
                                     </p>
                                     <p><strong>Среднее время ответа:</strong>
-                                        {% if card.get('card_avg_response_time') %}
-                                            {{ card.get('card_avg_response_time') }} дн.
+                                        {% if card.get('card_avg_response_time') and card.get('card_avg_response_time') > 0 %}
+                                            {{ "%.1f"|format(card.get('card_avg_response_time')) }} дн.
                                         {% else %}
                                             —
                                         {% endif %}
@@ -543,13 +589,53 @@
                                     <p><strong>Отрицательных отзывов (1–2⭐):</strong> {{ card.get('card_reviews_negative') or 0 }}</p>
                                 </div>
                             </div>
-                            {% set reviews = card.get('detailed_reviews') %}
-                            {% if reviews %}
-                                <div class="reviews-block">
-                                    <h4>Отзывы ({{ reviews|length }})</h4>
-                                    <ul class="review-list" style="list-style: none; padding: 0;">
-                                        {% for review in reviews %}
-                                            <li style="padding: 8px 0; border-bottom: 1px solid #eee;">
+                            {# Все отзывы с фильтрацией по чекбоксам #}
+                            {% set all_reviews = card.get('detailed_reviews') or [] %}
+                            {% if all_reviews %}
+                                <div class="reviews-block" style="margin-top: 15px; padding: 15px; background-color: #f9f9f9; border-radius: 4px;">
+                                    <div style="margin-bottom: 15px; padding: 10px; background-color: #fff; border: 1px solid #ddd; border-radius: 4px;">
+                                        <h4 style="margin: 0 0 10px 0; color: #333;">Фильтр отзывов:</h4>
+                                        {% set answered_count = card.get('card_answered_reviews_count', 0) or 0 %}
+                                        {% set total_count = card.get('card_reviews_count', 0) or 0 %}
+                                        {% set unanswered_count = total_count - answered_count %}
+                                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                            <button type="button" 
+                                                    class="review-filter-btn active" 
+                                                    data-card-id="gis-{{ loop.index0 }}" 
+                                                    data-filter="all" 
+                                                    onclick="filterReviewsByButton('gis-{{ loop.index0 }}', 'all')"
+                                                    style="padding: 8px 16px; font-size: 0.95em; border: 2px solid #2196F3; background-color: #2196F3; color: white; border-radius: 4px; cursor: pointer; transition: all 0.3s;">
+                                                Все отзывы ({{ total_count }})
+                                            </button>
+                                            <button type="button" 
+                                                    class="review-filter-btn" 
+                                                    data-card-id="gis-{{ loop.index0 }}" 
+                                                    data-filter="answered" 
+                                                    onclick="filterReviewsByButton('gis-{{ loop.index0 }}', 'answered')"
+                                                    style="padding: 8px 16px; font-size: 0.95em; border: 2px solid #4CAF50; background-color: #fff; color: #4CAF50; border-radius: 4px; cursor: pointer; transition: all 0.3s;">
+                                                Отзывы с ответом ({{ answered_count }})
+                                            </button>
+                                            <button type="button" 
+                                                    class="review-filter-btn" 
+                                                    data-card-id="gis-{{ loop.index0 }}" 
+                                                    data-filter="unanswered" 
+                                                    onclick="filterReviewsByButton('gis-{{ loop.index0 }}', 'unanswered')"
+                                                    style="padding: 8px 16px; font-size: 0.95em; border: 2px solid #FF9800; background-color: #fff; color: #FF9800; border-radius: 4px; cursor: pointer; transition: all 0.3s;">
+                                                Отзывы без ответа ({{ unanswered_count }})
+                                            </button>
+                                        </div>
+                                        {% if card.get('card_avg_response_time') and card.get('card_avg_response_time') > 0 %}
+                                            <p style="margin: 10px 0 0 0; font-size: 0.9em; color: #555;">
+                                                <strong>Среднее время ответа:</strong> {{ "%.1f"|format(card.get('card_avg_response_time')) }} дн.
+                                            </p>
+                                        {% endif %}
+                                    </div>
+                                    <ul class="review-list" id="reviews-list-gis-{{ loop.index0 }}" style="list-style: none; padding: 0; margin: 0;">
+                                        {% for review in all_reviews %}
+                                            <li class="review-item" 
+                                                data-card-id="gis-{{ loop.index0 }}"
+                                                data-has-response="{{ 'true' if review.get('has_response', False) else 'false' }}"
+                                                style="padding: 8px 0; border-bottom: 1px solid #ddd;">
                                                 <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                                                     {% if review.review_rating and review.review_rating|float > 0 %}
                                                         {% set rating = review.review_rating|float %}
@@ -571,7 +657,9 @@
                                                         {% elif rating >= 1.0 %}
                                                             {% set stars = "⭐" %}
                                                         {% endif %}
-                                                        <span style="font-size: 1.1em;">{{ stars }}</span>
+                                                        {% if stars %}
+                                                            <span style="font-size: 1.1em;">{{ stars }}</span>
+                                                        {% endif %}
                                                         <span style="font-size: 0.9em; color: #666;">({{ "%.1f"|format(rating) }})</span>
                                                     {% endif %}
                                                     {% if review.review_author %}
@@ -580,11 +668,20 @@
                                                     {% if review.review_date %}
                                                         <span style="font-size: 0.85em; color: #888;">{{ review.review_date }}</span>
                                                     {% endif %}
+                                                    {% if review.get('has_response', False) and review.response_date %}
+                                                        <span style="font-size: 0.85em; color: #2196F3; font-weight: 500;">→ Ответ: {{ review.response_date }}</span>
+                                                    {% endif %}
                                                 </div>
                                                 {% if review.review_text %}
                                                     <p style="margin: 5px 0 0 0; color: #333; font-size: 0.95em;">{{ review.review_text }}</p>
                                                 {% else %}
                                                     <p style="margin: 5px 0 0 0; color: #777; font-size: 0.9em; font-style: italic;">отзыв без текста</p>
+                                                {% endif %}
+                                                {% if review.get('has_response', False) and review.response_text %}
+                                                    <div style="margin: 8px 0 0 15px; padding: 8px; background-color: #e3f2fd; border-left: 3px solid #2196F3; border-radius: 3px;">
+                                                        <p style="margin: 0; font-size: 0.9em; color: #1976D2;"><strong>Ответ компании:</strong></p>
+                                                        <p style="margin: 5px 0 0 0; color: #333; font-size: 0.9em;">{{ review.response_text }}</p>
+                                                    </div>
                                                 {% endif %}
                                             </li>
                                         {% endfor %}
@@ -625,6 +722,88 @@
     // Префикс корневого пути приложения (нужен, если приложение висит не на /, а, например, на /parser)
     // Берём его из url_prefix, который формируется из request.scope['root_path']
     window.ROOT_PATH = "{{ url_prefix or '' }}";
+    
+    // Функция фильтрации отзывов по кнопкам (глобальная)
+    window.filterReviewsByButton = function(cardId, filterType) {
+        console.log('filterReviewsByButton called with cardId:', cardId, 'filterType:', filterType);
+        const reviewsList = document.getElementById('reviews-list-' + cardId);
+        if (!reviewsList) {
+            console.error('Reviews list not found for cardId:', cardId, 'trying to find element with id reviews-list-' + cardId);
+            return;
+        }
+        
+        // Обновляем стили кнопок - делаем активной выбранную кнопку
+        const buttons = document.querySelectorAll(`button.review-filter-btn[data-card-id="${cardId}"]`);
+        console.log('Found buttons:', buttons.length, 'for cardId:', cardId);
+        buttons.forEach(function(btn) {
+            const btnFilter = btn.getAttribute('data-filter');
+            if (btnFilter === filterType) {
+                // Активная кнопка
+                btn.classList.add('active');
+                if (filterType === 'all') {
+                    btn.style.backgroundColor = '#2196F3';
+                    btn.style.color = 'white';
+                    btn.style.borderColor = '#2196F3';
+                } else if (filterType === 'answered') {
+                    btn.style.backgroundColor = '#4CAF50';
+                    btn.style.color = 'white';
+                    btn.style.borderColor = '#4CAF50';
+                } else if (filterType === 'unanswered') {
+                    btn.style.backgroundColor = '#FF9800';
+                    btn.style.color = 'white';
+                    btn.style.borderColor = '#FF9800';
+                }
+            } else {
+                // Неактивная кнопка
+                btn.classList.remove('active');
+                if (btnFilter === 'all') {
+                    btn.style.backgroundColor = '#fff';
+                    btn.style.color = '#2196F3';
+                    btn.style.borderColor = '#2196F3';
+                } else if (btnFilter === 'answered') {
+                    btn.style.backgroundColor = '#fff';
+                    btn.style.color = '#4CAF50';
+                    btn.style.borderColor = '#4CAF50';
+                } else if (btnFilter === 'unanswered') {
+                    btn.style.backgroundColor = '#fff';
+                    btn.style.color = '#FF9800';
+                    btn.style.borderColor = '#FF9800';
+                }
+            }
+        });
+        
+        // Фильтруем отзывы - используем правильный селектор
+        // ВАЖНО: все элементы в списке принадлежат одной карточке, поэтому не проверяем cardId
+        const reviewItems = reviewsList.querySelectorAll('li.review-item');
+        console.log('Found review items in list:', reviewItems.length);
+        
+        let visibleCount = 0;
+        reviewItems.forEach(function(item) {
+            const hasResponse = item.getAttribute('data-has-response') === 'true';
+            
+            let shouldShow = false;
+            
+            if (filterType === 'all') {
+                // Показываем все отзывы
+                shouldShow = true;
+            } else if (filterType === 'answered') {
+                // Показываем только отзывы с ответом
+                shouldShow = hasResponse === true || hasResponse === 'true';
+            } else if (filterType === 'unanswered') {
+                // Показываем только отзывы без ответа
+                shouldShow = hasResponse === false || hasResponse === 'false';
+            }
+            
+            if (shouldShow) {
+                item.style.display = '';
+                visibleCount++;
+            } else {
+                item.style.display = 'none';
+            }
+        });
+        
+        console.log('Visible reviews after filtering:', visibleCount);
+    };
 
     // Функции управления задачей (должны быть глобальными)
     // Определяем функции ДО загрузки страницы, чтобы они были доступны для onclick

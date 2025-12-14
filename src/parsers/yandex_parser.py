@@ -29,7 +29,7 @@ class YandexParser(BaseParser):
         super().__init__(driver, settings)
         self._url: str = ""
         self._target_website: Optional[str] = None  # Целевой сайт для фильтрации
-        self._target_website: Optional[str] = None  # Целевой сайт для фильтрации
+        self._target_address: Optional[str] = None  # Целевой адрес для фильтрации
 
         self._captcha_wait_time: int = getattr(self._settings.parser, 'yandex_captcha_wait', 20)
         self._reviews_scroll_step: int = getattr(self._settings.parser, 'yandex_reviews_scroll_step', 500)
@@ -201,18 +201,33 @@ class YandexParser(BaseParser):
                         break
 
             rating_selectors = [
+                'div.business-summary-rating-badge-view__rating',  # Новый селектор для контейнера рейтинга
+                'span.business-summary-rating-badge-view__rating-text',  # Элементы с цифрами рейтинга
                 'span.business-rating-badge-view__rating-text',
                 '.search-business-snippet-view__rating-text',
                 'span[class*="rating"]',
                 'div[class*="rating"]',
             ]
             rating = ''
-            for selector in rating_selectors:
-                rating_element = card_element.select_one(selector)
-                if rating_element:
-                    rating = rating_element.get_text(strip=True)
-                    if rating:
-                        break
+            # Сначала пробуем новый селектор с несколькими span элементами
+            rating_container = card_element.select_one('div.business-summary-rating-badge-view__rating')
+            if rating_container:
+                # Собираем все тексты из span.business-summary-rating-badge-view__rating-text
+                rating_texts = rating_container.select('span.business-summary-rating-badge-view__rating-text')
+                if rating_texts:
+                    # Объединяем все тексты (например, "4" + "," + "5" = "4.5")
+                    rating_parts = [elem.get_text(strip=True) for elem in rating_texts]
+                    rating = ''.join(rating_parts).replace(',', '.')  # Заменяем запятую на точку для float
+                    logger.debug(f"Extracted rating from business-summary-rating-badge-view: {rating}")
+            
+            # Если не нашли через новый селектор, используем старые
+            if not rating:
+                for selector in rating_selectors[2:]:  # Пропускаем уже проверенные селекторы
+                    rating_element = card_element.select_one(selector)
+                    if rating_element:
+                        rating = rating_element.get_text(strip=True)
+                        if rating:
+                            break
 
             reviews_selectors = [
                 'a.business-review-view__rating',
@@ -368,19 +383,36 @@ class YandexParser(BaseParser):
                 card_snippet['card_address'] = ''
 
             rating_selectors = [
+                'div.business-summary-rating-badge-view__rating',  # Новый селектор для контейнера рейтинга
+                'span.business-summary-rating-badge-view__rating-text',  # Элементы с цифрами рейтинга
                 'span.business-rating-badge-view__rating-text',
                 'div.search-placemark-view__rating',
                 'div[class*="business-rating-view"]',
                 'span[class*="rating"]',
             ]
             rating_detail = None
-            for selector in rating_selectors:
-                rating_detail = card_details_soup.select_one(selector)
-                if rating_detail:
-                    rating_text = rating_detail.get_text(strip=True)
+            # Сначала пробуем новый селектор с несколькими span элементами
+            rating_container = card_details_soup.select_one('div.business-summary-rating-badge-view__rating')
+            if rating_container:
+                # Собираем все тексты из span.business-summary-rating-badge-view__rating-text
+                rating_texts = rating_container.select('span.business-summary-rating-badge-view__rating-text')
+                if rating_texts:
+                    # Объединяем все тексты (например, "4" + "," + "5" = "4.5")
+                    rating_parts = [elem.get_text(strip=True) for elem in rating_texts]
+                    rating_text = ''.join(rating_parts).replace(',', '.')  # Заменяем запятую на точку для float
                     if rating_text:
                         card_snippet['card_rating'] = rating_text
-                        break
+                        logger.debug(f"Extracted rating from business-summary-rating-badge-view on detail page: {rating_text}")
+            
+            # Если не нашли через новый селектор, используем старые
+            if not card_snippet.get('card_rating'):
+                for selector in rating_selectors[2:]:  # Пропускаем уже проверенные селекторы
+                    rating_detail = card_details_soup.select_one(selector)
+                    if rating_detail:
+                        rating_text = rating_detail.get_text(strip=True)
+                        if rating_text:
+                            card_snippet['card_rating'] = rating_text
+                            break
             if not card_snippet.get('card_rating'):
                 card_snippet['card_rating'] = ''
 
@@ -552,24 +584,39 @@ class YandexParser(BaseParser):
             )
 
             # Среднее время ответа по карточке (в днях) по детальным отзывам
+            # Используем datetime объекты напрямую, если они есть, иначе пытаемся распарсить строки
             deltas: List[float] = []
             for d in details:
-                if d.get('has_response') and d.get('review_date') and d.get('response_date'):
+                if d.get('has_response'):
                     try:
-                        rd = parse_russian_date(str(d.get('review_date')))
-                        respd = parse_russian_date(str(d.get('response_date')))
+                        # Сначала пробуем использовать datetime объекты напрямую
+                        rd = d.get('review_date_datetime')
+                        respd = d.get('response_date_datetime')
+                        
+                        # Если datetime объектов нет, пытаемся распарсить строки
+                        if not rd and d.get('review_date'):
+                            rd = parse_russian_date(str(d.get('review_date')))
+                        if not respd and d.get('response_date'):
+                            respd = parse_russian_date(str(d.get('response_date')))
+                        
                         if rd and respd and respd >= rd:
                             delta_days = (respd - rd).days
                             if delta_days >= 0:
                                 deltas.append(float(delta_days))
-                    except Exception:
+                                logger.debug(f"Added response time for Yandex review: {delta_days} days (review_date={rd.isoformat() if rd else 'N/A'}, response_date={respd.isoformat() if respd else 'N/A'})")
+                    except Exception as e:
+                        logger.debug(f"Error calculating response time for Yandex review: {e}")
                         continue
+            
             if deltas:
                 card_snippet['card_avg_response_time'] = round(sum(deltas) / len(deltas), 2)
+                logger.info(f"Calculated Yandex card avg response time: {card_snippet['card_avg_response_time']} days from {len(deltas)} reviews with responses")
             else:
                 # если не удалось посчитать по детальным данным, оставляем как есть (возможен парсинг из UI)
-                if 'card_avg_response_time' not in card_snippet:
+                # или устанавливаем пустую строку, если не было найдено в UI
+                if 'card_avg_response_time' not in card_snippet or not card_snippet.get('card_avg_response_time'):
                     card_snippet['card_avg_response_time'] = ""
+                    logger.debug("Yandex card avg response time not available (no response dates found)")
 
             if not card_snippet.get('card_name'):
                 logger.warning(f"Card name is empty. Card snippet keys: {list(card_snippet.keys())}")
@@ -1187,9 +1234,11 @@ class YandexParser(BaseParser):
                             'review_text': review_text or "",
                             'review_author': author_name or "Аноним",
                             'review_date': format_russian_date(review_date) if review_date else (date_text or ""),
+                            'review_date_datetime': review_date,  # Сохраняем datetime объект для расчета времени ответа
                             'has_response': has_response,
                             'response_text': response_text,
                             'response_date': format_russian_date(response_date) if response_date else "",
+                            'response_date_datetime': response_date,  # Сохраняем datetime объект для расчета времени ответа
                         })
                         
                         # Классификация: учитываем и звёзды, и смысл текста.
@@ -1709,6 +1758,11 @@ class YandexParser(BaseParser):
                 all_pages_urls.add(href)
             
             all_card_urls = set()
+            
+            # Словари для раннего извлечения адресов и сайтов из snippets (оптимизация)
+            card_url_to_address: Dict[str, str] = {}
+            card_url_to_website: Dict[str, str] = {}
+            
             pages_to_process = [search_query_url]
             if all_pages_urls:
                 # Увеличиваем количество обрабатываемых страниц пагинации
@@ -1747,6 +1801,7 @@ class YandexParser(BaseParser):
                     
                     page_source, soup = self._get_page_source_and_soup()
                     
+                    # ОПТИМИЗАЦИЯ: Одновременно извлекаем адреса и сайты из snippets для ранней фильтрации
                     for selector in self._card_selectors:
                         elements = soup.select(selector)
                         for elem in elements:
@@ -1756,7 +1811,24 @@ class YandexParser(BaseParser):
                                     continue
                                 if not href.startswith('http'):
                                     href = urllib.parse.urljoin("https://yandex.ru", href)
+                                
                                 all_card_urls.add(href)
+                                
+                                # Извлекаем адрес из snippet (если нужно)
+                                if self._target_address and href not in card_url_to_address:
+                                    snippet_data = self._get_card_snippet_data(elem)
+                                    if snippet_data:
+                                        address = snippet_data.get('card_address', '')
+                                        if address:
+                                            card_url_to_address[href] = address
+                                
+                                # Извлекаем сайт из snippet (если нужно)
+                                if not self._target_address and self._target_website and href not in card_url_to_website:
+                                    snippet_data = self._get_card_snippet_data(elem)
+                                    if snippet_data:
+                                        website = snippet_data.get('card_website', '')
+                                        if website:
+                                            card_url_to_website[href] = website
                     
                     new_cards = len(all_card_urls) - initial_card_count
                     logger.info(f"Found {new_cards} new cards on page {page_num}. Total: {len(all_card_urls)}")
@@ -1776,33 +1848,97 @@ class YandexParser(BaseParser):
             
             logger.info(f"Found {len(all_card_urls)} unique card URLs from {len(pages_to_process)} pages")
             
-            # ОПТИМИЗАЦИЯ: Ранняя фильтрация по сайту (если указан целевой сайт)
-            # Сохраняем извлеченные сайты для переиспользования при полном парсинге
-            card_url_to_website: Dict[str, str] = {}
+            # ОПТИМИЗАЦИЯ: Ранняя фильтрация по адресу (если указан целевой адрес)
+            # Используем уже извлеченные адреса из snippets (извлечены при сборе карточек)
             filtered_card_urls = list(all_card_urls)
-            if self._target_website:
-                logger.info(f"Применяю раннюю фильтрацию по сайту: {self._target_website}")
-                logger.info(f"Быстрая проверка сайтов для {len(filtered_card_urls)} карточек...")
+            
+            if self._target_address:
+                logger.info(f"Применяю раннюю фильтрацию по адресу: {self._target_address}")
+                logger.info(f"Использую адреса, извлеченные при сборе карточек для {len(filtered_card_urls)} карточек...")
                 original_count = len(filtered_card_urls)
                 matching_urls = []
                 
-                for idx, card_url in enumerate(filtered_card_urls[:self._max_records], 1):
-                    if self._is_stopped():
-                        break
-                    if idx % 10 == 0:
-                        self._update_progress(f"Проверка сайтов: {idx}/{min(len(filtered_card_urls), self._max_records)}")
-                    
-                    website = self._quick_extract_website(card_url)
-                    # Сохраняем извлеченный сайт для переиспользования
-                    card_url_to_website[card_url] = website
-                    if self._website_matches(website, self._target_website):
-                        matching_urls.append(card_url)
-                        logger.debug(f"Карточка {idx} прошла фильтр по сайту: {card_url} -> {website}")
-                    else:
-                        logger.debug(f"Карточка {idx} исключена (сайт не совпадает): {card_url} -> {website}")
+                # Фильтруем карточки по уже извлеченным адресам
+                for card_url in filtered_card_urls:
+                    address = card_url_to_address.get(card_url, '')
+                    if address:
+                        if self._address_matches(address, self._target_address):
+                            matching_urls.append(card_url)
+                            logger.info(f"Карточка прошла фильтр по адресу: {card_url[:80]} -> {address[:50]}")
+                        else:
+                            logger.debug(f"Карточка исключена (адрес не совпадает): {card_url[:80]} -> {address[:50]}")
+                
+                # Если не все карточки были найдены на страницах поиска, проверяем остальные
+                remaining = [url for url in filtered_card_urls if url not in card_url_to_address]
+                if remaining:
+                    logger.info(f"Проверяю адреса для оставшихся {len(remaining)} карточек (переход на детальные страницы)...")
+                    self._update_progress(f"Ранняя фильтрация по адресу: проверка {len(remaining)} карточек...")
+                    for idx, card_url in enumerate(remaining[:self._max_records], 1):
+                        if self._is_stopped():
+                            break
+                        if idx % 10 == 0:
+                            self._update_progress(f"Ранняя фильтрация по адресу: {idx}/{len(remaining)}")
+                        
+                        # Быстро извлекаем адрес, переходя на карточку
+                        try:
+                            address = self._quick_extract_address(card_url)
+                            card_url_to_address[card_url] = address
+                            if self._address_matches(address, self._target_address):
+                                matching_urls.append(card_url)
+                                logger.info(f"Карточка прошла фильтр по адресу: {card_url[:80]} -> {address[:50]}")
+                            else:
+                                logger.debug(f"Карточка исключена (адрес не совпадает): {card_url[:80]} -> {address[:50]}")
+                        except Exception as e:
+                            logger.warning(f"Ошибка при извлечении адреса для {card_url}: {e}")
+                            continue
                 
                 filtered_card_urls = matching_urls
-                logger.info(f"Ранняя фильтрация завершена: {original_count} -> {len(filtered_card_urls)} карточек (осталось {len(filtered_card_urls)} для полного парсинга)")
+                logger.info(f"Ранняя фильтрация по адресу завершена: {original_count} -> {len(filtered_card_urls)} карточек (осталось {len(filtered_card_urls)} для полного парсинга)")
+            
+            # ОПТИМИЗАЦИЯ: Ранняя фильтрация по сайту (если адрес НЕ указан, но сайт указан)
+            # Используем уже извлеченные сайты из snippets (извлечены при сборе карточек)
+            if not self._target_address and self._target_website:
+                logger.info(f"Применяю раннюю фильтрацию по сайту: {self._target_website}")
+                logger.info(f"Использую сайты, извлеченные при сборе карточек для {len(filtered_card_urls)} карточек...")
+                original_count = len(filtered_card_urls)
+                matching_urls = []
+                
+                # Фильтруем карточки по уже извлеченным сайтам
+                for card_url in filtered_card_urls:
+                    website = card_url_to_website.get(card_url, '')
+                    if website:
+                        if self._website_matches(website, self._target_website):
+                            matching_urls.append(card_url)
+                            logger.info(f"Карточка прошла фильтр по сайту: {card_url[:80]} -> {website[:50]}")
+                        else:
+                            logger.debug(f"Карточка исключена (сайт не совпадает): {card_url[:80]} -> {website[:50]}")
+                
+                # Если не все карточки были найдены на страницах поиска, проверяем остальные
+                remaining = [url for url in filtered_card_urls if url not in card_url_to_website]
+                if remaining:
+                    logger.info(f"Проверяю сайты для оставшихся {len(remaining)} карточек (переход на детальные страницы)...")
+                    self._update_progress(f"Ранняя фильтрация по сайту: проверка {len(remaining)} карточек...")
+                    for idx, card_url in enumerate(remaining[:self._max_records], 1):
+                        if self._is_stopped():
+                            break
+                        if idx % 10 == 0:
+                            self._update_progress(f"Ранняя фильтрация по сайту: {idx}/{len(remaining)}")
+                        
+                        # Быстро извлекаем сайт, переходя на карточку
+                        try:
+                            website = self._quick_extract_website(card_url)
+                            card_url_to_website[card_url] = website
+                            if self._website_matches(website, self._target_website):
+                                matching_urls.append(card_url)
+                                logger.info(f"Карточка прошла фильтр по сайту: {card_url[:80]} -> {website[:50]}")
+                            else:
+                                logger.debug(f"Карточка исключена (сайт не совпадает): {card_url[:80]} -> {website[:50]}")
+                        except Exception as e:
+                            logger.warning(f"Ошибка при извлечении сайта для {card_url}: {e}")
+                            continue
+                
+                filtered_card_urls = matching_urls
+                logger.info(f"Ранняя фильтрация по сайту завершена: {original_count} -> {len(filtered_card_urls)} карточек (осталось {len(filtered_card_urls)} для полного парсинга)")
             
             # Собираем все карточки с данными (только для отфильтрованных URL)
             all_cards_data = []
@@ -1814,15 +1950,23 @@ class YandexParser(BaseParser):
                     break
                 
                 try:
-                    self._update_progress(f"Сканирование карточек: {idx + 1}/{min(len(all_card_urls), self._max_records)}")
+                    self._update_progress(f"Сканирование карточек: {idx + 1}/{min(len(filtered_card_urls), self._max_records)}")
                     self.driver.navigate(card_url)
                     time.sleep(2)
                     self.check_captcha()
                     
                     page_source, card_soup = self._get_page_source_and_soup()
-                    card_data = self._extract_card_data_from_detail_page(card_soup, pre_extracted_website=card_url_to_website.get(card_url))
+                    # Используем предварительно извлеченный сайт, если он был получен при ранней фильтрации
+                    pre_extracted_website = card_url_to_website.get(card_url)
+                    card_data = self._extract_card_data_from_detail_page(card_soup, pre_extracted_website=pre_extracted_website)
                     
                     if card_data and card_data.get('card_name'):
+                        # Дополнительная проверка адреса (если не была выполнена ранняя фильтрация)
+                        if self._target_address and card_url not in card_url_to_address:
+                            card_address = card_data.get('card_address', '')
+                            if not self._address_matches(card_address, self._target_address):
+                                logger.debug(f"Карточка исключена по адресу: {card_data.get('card_name', 'Unknown')[:50]} -> {card_address[:50]}")
+                                continue
                         all_cards_data.append(card_data)
                 except Exception as e:
                     logger.error(f"Error processing card {card_url}: {e}")
@@ -1873,10 +2017,50 @@ class YandexParser(BaseParser):
         
         return normalized_card == normalized_target
 
+    def _quick_extract_address(self, card_url: str) -> str:
+        """
+        Быстро извлекает только адрес из карточки без полного парсинга.
+        Используется для ранней фильтрации карточек по адресу.
+        """
+        original_url = self.driver.get_current_url()
+        try:
+            self.driver.navigate(card_url)
+            time.sleep(1)  # Короткая задержка для загрузки минимального контента
+            page_source, soup = self._get_page_source_and_soup()
+            
+            address_selectors = [
+                'a.orgpage-header-view__address',
+                'a[href*="/house/"]',
+                'div.business-contacts-view__address-link',
+                'div[class*="address"]',
+                'span[class*="address"]',
+                '[itemprop="address"]',
+                'div[data-test="address"]',
+            ]
+            
+            address = ""
+            for selector in address_selectors:
+                address_elem = soup.select_one(selector)
+                if address_elem:
+                    address_text = address_elem.get_text(strip=True)
+                    if address_text and len(address_text) > 5:
+                        address = self._normalize_address(address_text)
+                        break
+            
+            return address
+        except Exception as e:
+            logger.warning(f"Error during quick address extraction for {card_url}: {e}")
+            return ""
+        finally:
+            # Возвращаемся на предыдущую страницу, чтобы не нарушать основной цикл
+            self.driver.navigate(original_url)
+            time.sleep(1)
+    
     def _quick_extract_website(self, card_url: str) -> str:
         """
         Быстро извлекает только сайт из карточки без полного парсинга.
         Используется для ранней фильтрации карточек по сайту.
+        ОТКЛЮЧЕНО: фильтрация по сайту временно отключена.
         """
         original_url = self.driver.get_current_url()
         try:
@@ -1910,7 +2094,7 @@ class YandexParser(BaseParser):
             self.driver.navigate(original_url)
             time.sleep(1)
 
-    def parse(self, url: str, search_query_site: Optional[str] = None) -> Dict[str, Any]:
+    def parse(self, url: str, search_query_site: Optional[str] = None, search_query_address: Optional[str] = None) -> Dict[str, Any]:
         self._update_progress("Инициализация парсера Yandex...")
         self._url = url
         parsed_url = urllib.parse.urlparse(url)
@@ -1927,12 +2111,15 @@ class YandexParser(BaseParser):
         else:
             self._search_query_name = "YandexMapsSearch"
 
-        # Сохраняем целевой сайт для фильтрации
+        # Сохраняем целевой сайт и адрес для фильтрации
         self._target_website = search_query_site
+        self._target_address = search_query_address
         
         logger.info(f"Starting Yandex Parser for URL: {url}. Search query name extracted as: {self._search_query_name}")
         if self._target_website:
             logger.info(f"Target website for filtering: {self._target_website}")
+        if self._target_address:
+            logger.info(f"Target address for filtering: {self._target_address}")
 
         try:
             collected_cards_data = self._parse_cards(url)

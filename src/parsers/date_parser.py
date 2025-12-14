@@ -58,13 +58,25 @@ def parse_russian_date(date_string: str, current_year: Optional[int] = None) -> 
                 if year > datetime.now().year:
                     if year == datetime.now().year + 1:
                         year = datetime.now().year
+                    elif year > datetime.now().year + 10:
+                        # Если год явно неправильный (например, 3035), используем текущий год
+                        logger.warning(f"Invalid year {year} in date '{date_string}', using current year")
+                        year = datetime.now().year
                 
                 month = MONTHS_RU.get(month_name)
-                if month and 1 <= day <= 31 and 2000 <= year <= 2100:
+                if month and 1 <= day <= 31 and 2000 <= year <= datetime.now().year + 1:
                     parsed_date = datetime(year, month, day)
                     # Проверяем, что дата не в будущем (с запасом в 1 день)
                     if parsed_date > datetime.now() + timedelta(days=1):
                         # Если дата в будущем, используем предыдущий год
+                        parsed_date = parsed_date.replace(year=year - 1)
+                    return parsed_date
+                elif month and 1 <= day <= 31:
+                    # Если год вне разумных пределов, но месяц и день валидны, используем текущий год
+                    logger.warning(f"Year {year} out of range in date '{date_string}', using current year")
+                    year = datetime.now().year
+                    parsed_date = datetime(year, month, day)
+                    if parsed_date > datetime.now() + timedelta(days=1):
                         parsed_date = parsed_date.replace(year=year - 1)
                     return parsed_date
             except (ValueError, IndexError, KeyError) as e:

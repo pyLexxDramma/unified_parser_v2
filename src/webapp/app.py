@@ -5,8 +5,10 @@ import threading
 import os
 import urllib.parse
 import re
+import json
+from datetime import datetime
 from fastapi import FastAPI, Request, Depends, HTTPException, Form
-from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, Response
 from fastapi import status as http_status
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -97,6 +99,7 @@ def get_url_prefix(request: Request | None = None) -> str:
 class ParsingForm(BaseModel):
     company_name: str
     company_site: str
+    company_address: Optional[str] = ""  # Фильтрация по адресу (опционально)
     source: str
     email: str
     output_filename: str = "report.csv"
@@ -390,7 +393,7 @@ def _normalize_company_name(raw_name: str) -> str:
 
     return name
 
-def _run_parser_task(parser_class, url: str, task_id: str, source: str, company_site: Optional[str] = None):
+def _run_parser_task(parser_class, url: str, task_id: str, source: str, company_site: Optional[str] = None, company_address: Optional[str] = None):
     driver = None
     try:
         logger.info(f"Task {task_id} ({source}): Starting parser task for URL: {url}")
@@ -441,8 +444,10 @@ def _run_parser_task(parser_class, url: str, task_id: str, source: str, company_
         logger.info(f"Task {task_id} ({source}): Starting parse for URL: {url}")
         if company_site:
             logger.info(f"Task {task_id} ({source}): Target website for filtering: {company_site}")
+        if company_address:
+            logger.info(f"Task {task_id} ({source}): Target address for filtering: {company_address}")
         try:
-            result = parser.parse(url=url, search_query_site=company_site)
+            result = parser.parse(url=url, search_query_site=company_site, search_query_address=company_address)
         except Exception as parse_error:
             logger.error(f"Task {task_id} ({source}): Parse failed: {parse_error}", exc_info=True)
             update_task_status(task_id, "FAILED", f"{source}: Ошибка парсинга: {str(parse_error)}", error=str(parse_error))
@@ -488,6 +493,8 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
         form_data.company_name = _normalize_company_name(form_data.company_name)
     if form_data.company_site:
         form_data.company_site = form_data.company_site.strip()
+    if form_data.company_address:
+        form_data.company_address = form_data.company_address.strip()
     if form_data.email:
         form_data.email = form_data.email.strip()
 
@@ -540,6 +547,21 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
             status_code=302,
         )
 
+    # Проверка на одновременный парсинг: если уже есть активная задача (RUNNING или PENDING), отказываем
+    from src.utils.task_manager import active_tasks, TaskStatus
+    active_parsing_tasks = [
+        task for task in active_tasks.values()
+        if task.status in (TaskStatus.RUNNING, TaskStatus.PENDING)
+    ]
+    if active_parsing_tasks:
+        logger.warning(f"Parsing already in progress. Active tasks: {len(active_parsing_tasks)}")
+        return RedirectResponse(
+            url=f"{url_prefix}/?error=" + urllib.parse.quote(
+                "Парсинг уже выполняется. Пожалуйста, дождитесь завершения текущего парсинга, чтобы избежать блокировки."
+            ),
+            status_code=302,
+        )
+
     task_id = create_task(
         email=form_data.email,
         source_info={
@@ -584,7 +606,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                             break
                         yandex_url = _generate_yandex_url(form_data.company_name, "city", city)
                         logger.info(f"Task {task_id}: Collecting Yandex cards for city {city}...")
-                        yandex_result, yandex_error = _run_parser_task(YandexParser, yandex_url, task_id, "Yandex", company_site=form_data.company_site)
+                        yandex_result, yandex_error = _run_parser_task(YandexParser, yandex_url, task_id, "Yandex", company_site=form_data.company_site, company_address=form_data.company_address)
                         if yandex_result:
                             cards = yandex_result.get("cards_data", [])
                             for card in cards:
@@ -612,7 +634,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                                 city,
                             )
                             logger.info(f"Task {task_id}: Collecting 2GIS cards for city {city}...")
-                            gis_result, gis_error = _run_parser_task(GisParser, gis_url, task_id, "2GIS", company_site=form_data.company_site)
+                            gis_result, gis_error = _run_parser_task(GisParser, gis_url, task_id, "2GIS", company_site=form_data.company_site, company_address=form_data.company_address)
                             if gis_result:
                                 cards = gis_result.get("cards_data", [])
                                 for card in cards:
@@ -703,7 +725,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                         f"Task {task_id}: Starting Yandex parser first (sequential execution)..."
                     )
                     yandex_result, yandex_error = _run_parser_task(
-                        YandexParser, yandex_url, task_id, "Yandex", company_site=form_data.company_site
+                        YandexParser, yandex_url, task_id, "Yandex", company_site=form_data.company_site, company_address=form_data.company_address
                     )
 
                     if is_task_stopped(task_id):
@@ -715,7 +737,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                             f"Task {task_id}: Starting 2GIS parser after Yandex (sequential execution)..."
                         )
                         gis_result, gis_error = _run_parser_task(
-                            GisParser, gis_url, task_id, "2GIS", company_site=form_data.company_site
+                            GisParser, gis_url, task_id, "2GIS", company_site=form_data.company_site, company_address=form_data.company_address
                         )
 
                     # Собираем детальные карточки по обоим источникам
@@ -836,7 +858,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                         url = _generate_yandex_url(form_data.company_name, "city", city)
                         update_task_status(task_id, "RUNNING", f"Yandex: Парсинг города {city}...")
                         logger.info(f"Task {task_id}: Starting Yandex parser for city {city} (single source)...")
-                        result, error = _run_parser_task(YandexParser, url, task_id, "Yandex", company_site=form_data.company_site)
+                        result, error = _run_parser_task(YandexParser, url, task_id, "Yandex", company_site=form_data.company_site, company_address=form_data.company_address)
 
                         if result and result.get("cards_data"):
                             for card in result["cards_data"]:
@@ -926,10 +948,38 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                             else f"Парсинг завершен. Найдено карточек: {len(all_cards)}"
                         )
                         update_task_status(task_id, TaskStatus.COMPLETED, msg)
+                        
+                        # Отправляем email уведомление
+                        try:
+                            from src.utils.email_sender import send_parsing_completion_email
+                            send_parsing_completion_email(
+                                email=form_data.email,
+                                task_id=task_id,
+                                status="COMPLETED",
+                                company_name=form_data.company_name,
+                                settings=settings,
+                                cards_count=len(all_cards)
+                            )
+                        except Exception as email_err:
+                            logger.warning(f"Failed to send email notification: {email_err}")
                     else:
                         update_task_status(
                             task_id, "COMPLETED", "Парсинг завершен. Карточки не найдены"
                         )
+                        
+                        # Отправляем email уведомление
+                        try:
+                            from src.utils.email_sender import send_parsing_completion_email
+                            send_parsing_completion_email(
+                                email=form_data.email,
+                                task_id=task_id,
+                                status="COMPLETED",
+                                company_name=form_data.company_name,
+                                settings=settings,
+                                cards_count=0
+                            )
+                        except Exception as email_err:
+                            logger.warning(f"Failed to send email notification: {email_err}")
                 else:
                     # Старое поведение для одного города / общего поиска
                     url = _generate_yandex_url(
@@ -939,6 +989,20 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
 
                     if error:
                         update_task_status(task_id, "FAILED", f"Ошибка: {error}", error=error)
+                        
+                        # Отправляем email уведомление об ошибке
+                        try:
+                            from src.utils.email_sender import send_parsing_completion_email
+                            send_parsing_completion_email(
+                                email=form_data.email,
+                                task_id=task_id,
+                                status="FAILED",
+                                company_name=form_data.company_name,
+                                settings=settings,
+                                error=error
+                            )
+                        except Exception as email_err:
+                            logger.warning(f"Failed to send email notification: {email_err}")
                     elif result and result.get("cards_data"):
                         writer = CSVWriter(settings=settings)
                         results_dir = settings.app_config.writer.output_dir
@@ -966,10 +1030,38 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                             else f"Парсинг завершен. Найдено карточек: {len(result['cards_data'])}"
                         )
                         update_task_status(task_id, TaskStatus.COMPLETED, msg)
+                        
+                        # Отправляем email уведомление
+                        try:
+                            from src.utils.email_sender import send_parsing_completion_email
+                            send_parsing_completion_email(
+                                email=form_data.email,
+                                task_id=task_id,
+                                status="COMPLETED",
+                                company_name=form_data.company_name,
+                                settings=settings,
+                                cards_count=len(result['cards_data'])
+                            )
+                        except Exception as email_err:
+                            logger.warning(f"Failed to send email notification: {email_err}")
                     else:
                         update_task_status(
                             task_id, "COMPLETED", "Парсинг завершен. Карточки не найдены"
                         )
+                        
+                        # Отправляем email уведомление
+                        try:
+                            from src.utils.email_sender import send_parsing_completion_email
+                            send_parsing_completion_email(
+                                email=form_data.email,
+                                task_id=task_id,
+                                status="COMPLETED",
+                                company_name=form_data.company_name,
+                                settings=settings,
+                                cards_count=0
+                            )
+                        except Exception as email_err:
+                            logger.warning(f"Failed to send email notification: {email_err}")
             elif form_data.source == '2gis':
                 all_cards: List[Dict[str, Any]] = []
                 stats: Dict[str, Any] = {}
@@ -990,7 +1082,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                         )
                         update_task_status(task_id, "RUNNING", f"2GIS: Парсинг города {city}...")
                         logger.info(f"Task {task_id}: Starting 2GIS parser for city {city} (single source)...")
-                        result, error = _run_parser_task(GisParser, url, task_id, "2GIS", company_site=form_data.company_site)
+                        result, error = _run_parser_task(GisParser, url, task_id, "2GIS", company_site=form_data.company_site, company_address=form_data.company_address)
 
                         if result and result.get("cards_data"):
                             for card in result["cards_data"]:
@@ -1078,10 +1170,38 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                             "COMPLETED",
                             f"Парсинг завершен. Найдено карточек: {len(all_cards)}",
                         )
+                        
+                        # Отправляем email уведомление
+                        try:
+                            from src.utils.email_sender import send_parsing_completion_email
+                            send_parsing_completion_email(
+                                email=form_data.email,
+                                task_id=task_id,
+                                status="COMPLETED",
+                                company_name=form_data.company_name,
+                                settings=settings,
+                                cards_count=len(all_cards)
+                            )
+                        except Exception as email_err:
+                            logger.warning(f"Failed to send email notification: {email_err}")
                     else:
                         update_task_status(
                             task_id, "COMPLETED", "Парсинг завершен. Карточки не найдены"
                         )
+                        
+                        # Отправляем email уведомление
+                        try:
+                            from src.utils.email_sender import send_parsing_completion_email
+                            send_parsing_completion_email(
+                                email=form_data.email,
+                                task_id=task_id,
+                                status="COMPLETED",
+                                company_name=form_data.company_name,
+                                settings=settings,
+                                cards_count=0
+                            )
+                        except Exception as email_err:
+                            logger.warning(f"Failed to send email notification: {email_err}")
                 else:
                     url = _generate_gis_url(
                         form_data.company_name,
@@ -1093,6 +1213,20 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
 
                     if error:
                         update_task_status(task_id, "FAILED", f"Ошибка: {error}", error=error)
+                        
+                        # Отправляем email уведомление об ошибке
+                        try:
+                            from src.utils.email_sender import send_parsing_completion_email
+                            send_parsing_completion_email(
+                                email=form_data.email,
+                                task_id=task_id,
+                                status="FAILED",
+                                company_name=form_data.company_name,
+                                settings=settings,
+                                error=error
+                            )
+                        except Exception as email_err:
+                            logger.warning(f"Failed to send email notification: {email_err}")
                     elif result and result.get("cards_data"):
                         writer = CSVWriter(settings=settings)
                         results_dir = settings.app_config.writer.output_dir
@@ -1118,6 +1252,20 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
                             "COMPLETED",
                             f"Парсинг завершен. Найдено карточек: {len(result['cards_data'])}",
                         )
+                        
+                        # Отправляем email уведомление
+                        try:
+                            from src.utils.email_sender import send_parsing_completion_email
+                            send_parsing_completion_email(
+                                email=form_data.email,
+                                task_id=task_id,
+                                status="COMPLETED",
+                                company_name=form_data.company_name,
+                                settings=settings,
+                                cards_count=len(result['cards_data'])
+                            )
+                        except Exception as email_err:
+                            logger.warning(f"Failed to send email notification: {email_err}")
                     else:
                         update_task_status(
                             task_id, "COMPLETED", "Парсинг завершен. Карточки не найдены"
@@ -1125,6 +1273,23 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
         except Exception as e:
             logger.error(f"Error in parsing task {task_id}: {e}", exc_info=True)
             update_task_status(task_id, "FAILED", f"Критическая ошибка: {str(e)}", error=str(e))
+            
+            # Отправляем email уведомление об ошибке
+            try:
+                task = active_tasks.get(task_id)
+                if task and task.email:
+                    from src.utils.email_sender import send_parsing_completion_email
+                    company_name = task.source_info.get('company_name', 'Неизвестная компания') if task.source_info else 'Неизвестная компания'
+                    send_parsing_completion_email(
+                        email=task.email,
+                        task_id=task_id,
+                        status="FAILED",
+                        company_name=company_name,
+                        settings=settings,
+                        error=str(e)
+                    )
+            except Exception as email_err:
+                logger.warning(f"Failed to send email notification: {email_err}")
         finally:
             logger.info(f"Parsing thread finished for task {task_id}")
 
@@ -1336,6 +1501,75 @@ async def download_pdf_report(request: Request, task_id: str):
         raise HTTPException(status_code=500, detail=f"Error generating PDF: {str(e)}")
 
 
+@app.get("/tasks/{task_id}/download-json")
+async def download_json_report(request: Request, task_id: str):
+    if not check_auth(request):
+        return RedirectResponse(url="/login", status_code=302)
+
+    task = active_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.status != 'COMPLETED':
+        raise HTTPException(status_code=400, detail="Task is not completed yet")
+
+    try:
+        # Функция для сериализации datetime и других объектов
+        def json_serializer(obj):
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            elif hasattr(obj, '__dict__'):
+                return obj.__dict__
+            else:
+                return str(obj)
+        
+        # Формируем JSON отчет со всеми данными задачи
+        json_report = {
+            "task_id": task.task_id,
+            "status": task.status,
+            "company_name": task.source_info.get('company_name', 'Unknown'),
+            "company_site": task.source_info.get('company_site', ''),
+            "source": task.source_info.get('source', ''),
+            "created_at": task.timestamp.isoformat() if task.timestamp else None,
+            "start_time": task.start_time.isoformat() if task.start_time else None,
+            "completed_at": task.end_time.isoformat() if task.end_time else None,
+            "statistics": task.statistics or {},
+            "cards": task.detailed_results or [],
+            "result_file": task.result_file,
+            "progress": task.progress,
+            "error": task.error,
+        }
+
+        # Сериализуем в JSON с правильной кодировкой и обработкой datetime
+        json_str = json.dumps(json_report, ensure_ascii=False, indent=2, default=json_serializer)
+        
+        # Формируем имя файла - используем только ASCII-совместимые символы
+        # чтобы избежать проблем с кодировкой заголовков (FastAPI использует latin-1 для заголовков)
+        company_name = task.source_info.get('company_name', 'Unknown')
+        # Очищаем имя файла от недопустимых символов, оставляем только латиницу, цифры, дефис и подчеркивание
+        safe_filename = re.sub(r'[^a-zA-Z0-9_-]', '', company_name).strip()
+        if not safe_filename or len(safe_filename) == 0:
+            safe_filename = "company"
+        # Ограничиваем длину имени файла
+        if len(safe_filename) > 50:
+            safe_filename = safe_filename[:50]
+        json_filename = f"report_{safe_filename}_{task_id[:8]}.json"
+
+        # Используем правильную кодировку UTF-8 для JSON
+        json_bytes = json_str.encode('utf-8')
+        
+        return Response(
+            content=json_bytes,
+            media_type="application/json; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{json_filename}\""
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error generating JSON report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error generating JSON: {str(e)}")
+
+
 @app.post("/api/tasks/{task_id}/pause")
 async def api_pause_task(request: Request, task_id: str):
     if not check_auth(request):
@@ -1455,7 +1689,7 @@ async def api_restart_task(request: Request, task_id: str):
                 all_cards: List[Dict[str, Any]] = []
                 statistics: Dict[str, Any] = {}
 
-                yandex_result, yandex_error = _run_parser_task(YandexParser, yandex_url, new_task_id, "Yandex", company_site=cloned_form.company_site)
+                yandex_result, yandex_error = _run_parser_task(YandexParser, yandex_url, new_task_id, "Yandex", company_site=cloned_form.company_site, company_address=getattr(cloned_form, 'company_address', None))
                 if yandex_result:
                     cards = yandex_result.get("cards_data", [])
                     for card in cards:
@@ -1464,7 +1698,7 @@ async def api_restart_task(request: Request, task_id: str):
                     if yandex_result.get("aggregated_info"):
                         statistics["yandex"] = yandex_result["aggregated_info"]
 
-                gis_result, gis_error = _run_parser_task(GisParser, gis_url, new_task_id, "2GIS", company_site=cloned_form.company_site)
+                gis_result, gis_error = _run_parser_task(GisParser, gis_url, new_task_id, "2GIS", company_site=cloned_form.company_site, company_address=getattr(cloned_form, 'company_address', None))
                 if gis_result:
                     cards = gis_result.get("cards_data", [])
                     for card in cards:
@@ -1508,7 +1742,7 @@ async def api_restart_task(request: Request, task_id: str):
                     )
                     parser_class = GisParser
 
-                result, error = _run_parser_task(parser_class, url, new_task_id, source_name, company_site=cloned_form.company_site)
+                result, error = _run_parser_task(parser_class, url, new_task_id, source_name, company_site=cloned_form.company_site, company_address=getattr(cloned_form, 'company_address', None))
 
                 if result and isinstance(result, dict):
                     cards = result.get("cards_data", [])

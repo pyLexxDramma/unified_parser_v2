@@ -165,10 +165,15 @@ class PDFWriter:
             data.append(['Процент отзывов с ответами', "0%"])
 
         avg_time = stats.get('aggregated_avg_response_time', 0)
-        if avg_time:
+        if avg_time and avg_time > 0:
             data.append(['Среднее время ответа', f"{avg_time:.2f} дней"])
         else:
-            data.append(['Среднее время ответа', "—"])
+            # Если среднее время ответа недоступно, показываем процент отвеченных отзывов
+            if total_reviews > 0 and answered_reviews > 0:
+                percent = stats.get('aggregated_answered_reviews_percent', 0) or (answered_reviews / total_reviews) * 100
+                data.append(['Среднее время ответа', f"{percent:.1f}% отвечено (дата недоступна)"])
+            else:
+                data.append(['Среднее время ответа', "—"])
 
         data.append(['Положительных отзывов (4-5⭐)', str(stats.get('aggregated_positive_reviews', 0))])
         data.append(['Отрицательных отзывов (1-3⭐)', str(stats.get('aggregated_negative_reviews', 0))])
@@ -178,7 +183,7 @@ class PDFWriter:
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1976d2')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), self.base_font_name),
+            ('FONTNAME', (0, 0), (-1, -1), self.base_font_name),  # Применяем шрифт ко всем ячейкам
             ('FONTSIZE', (0, 0), (-1, 0), 12),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
@@ -223,7 +228,7 @@ class PDFWriter:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4CAF50')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), self.base_font_name),
+                ('FONTNAME', (0, 0), (-1, -1), self.base_font_name),  # Применяем шрифт ко всем ячейкам
                 ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
