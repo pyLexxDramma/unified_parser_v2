@@ -2500,25 +2500,69 @@ class GisParser(BaseParser):
             else:
                 logger.warning(f"No snippet data extracted (empty dict). Card text: {card_element.get_text(strip=True)[:200] if card_element else 'N/A'}")
             
-            # ВАЖНО: возвращаем snippet_data даже если не все поля найдены, главное чтобы было хотя бы одно поле
-            return snippet_data if (snippet_data and len(snippet_data) > 0) else None
-            
-            # Сайт
+            # Сайт - извлекаем из snippet ПЕРЕД возвратом
             website_selectors = [
                 'a[href^="http"]:not([href*="2gis.ru"]):not([href*="yandex.ru"])',
                 'a[class*="website"]',
                 'a[itemprop="url"]',
+                'a[href*="link.2gis.ru"]',  # Также проверяем ссылки через link.2gis.ru
             ]
             website = ""
+            candidate_websites = []
+            
             for selector in website_selectors:
-                website_elem = card_element.select_one(selector)
-                if website_elem:
-                    website = website_elem.get('href', '')
-                    if website and '2gis.ru' not in website and 'yandex.ru' not in website:
-                        snippet_data['card_website'] = website
+                website_elems = card_element.select(selector)
+                for website_elem in website_elems:
+                    href = website_elem.get('href', '')
+                    if not href:
+                        continue
+                    # Пропускаем служебные домены
+                    if '2gis.ru' in href or 'yandex.ru' in href:
+                        continue
+                    # Если это link.2gis.ru, пытаемся извлечь реальный URL
+                    if 'link.2gis.ru' in href:
+                        # Упрощенная проверка - ищем домен в тексте ссылки
+                        link_text = website_elem.get_text(strip=True)
+                        if link_text and '.' in link_text and len(link_text) < 100:
+                            # Проверяем, похоже ли это на домен
+                            if re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-\.]*\.[a-zA-Z]{2,}$', link_text):
+                                candidate_websites.append(f"http://{link_text}")
+                                logger.debug(f"Found candidate website from link.2gis.ru text: http://{link_text}")
+                    else:
+                        candidate_websites.append(href)
+                        logger.debug(f"Found candidate website from snippet: {href}")
+            
+            # Если есть целевой сайт для фильтрации, выбираем наиболее подходящий
+            if candidate_websites and self._target_website:
+                normalized_target = self._normalize_url_for_comparison(self._target_website)
+                for candidate in candidate_websites:
+                    normalized_candidate = self._normalize_url_for_comparison(candidate)
+                    if normalized_candidate == normalized_target:
+                        website = candidate
+                        logger.debug(f"Selected matching website: {website} (matches target: {self._target_website})")
                         break
             
-            return snippet_data if snippet_data else None
+            # Если не нашли совпадение, берем первую подходящую
+            if not website and candidate_websites:
+                website = candidate_websites[0]
+                logger.debug(f"Selected first candidate website: {website}")
+            
+            if website:
+                snippet_data['card_website'] = website
+                logger.debug(f"Added website to snippet data: {website}")
+            
+            # Логируем результат извлечения
+            # ВАЖНО: возвращаем данные даже если не все поля найдены (например, только reviews_count)
+            if snippet_data and len(snippet_data) > 0:
+                logger.info(f"Extracted snippet data: reviews={snippet_data.get('card_reviews_count', 0)}, "
+                          f"positive={snippet_data.get('card_reviews_positive', 0)}, "
+                          f"negative={snippet_data.get('card_reviews_negative', 0)}, "
+                          f"rating={snippet_data.get('card_rating', 0)}, website={snippet_data.get('card_website', 'N/A')}")
+            else:
+                logger.warning(f"No snippet data extracted (empty dict). Card text: {card_element.get_text(strip=True)[:200] if card_element else 'N/A'}")
+            
+            # ВАЖНО: возвращаем snippet_data даже если не все поля найдены, главное чтобы было хотя бы одно поле
+            return snippet_data if (snippet_data and len(snippet_data) > 0) else None
         except Exception as e:
             logger.debug(f"Error extracting snippet data from 2GIS card: {e}")
             return None
@@ -2606,6 +2650,10 @@ class GisParser(BaseParser):
             if not website:
                 link_2gis_elems = soup.select('a[href*="link.2gis.ru"]')
                 logger.info(f"Found {len(link_2gis_elems)} link.2gis.ru elements, checking for website...")
+                
+                # Собираем все возможные сайты из link.2gis.ru
+                candidate_websites = []
+                
                 for elem in link_2gis_elems:
                     href = elem.get('href', '')
                     link_text = elem.get_text(strip=True)
@@ -2618,18 +2666,31 @@ class GisParser(BaseParser):
                             if re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-\.]*\.[a-zA-Z]{2,}$', link_text):
                                 # Исключаем служебные домены
                                 if not any(domain in link_text.lower() for domain in excluded_domains):
-                                    website = f"http://{link_text}"
-                                    logger.info(f"Extracted URL from link text: {website}")
-                                    break
+                                    candidate_websites.append(f"http://{link_text}")
+                                    logger.info(f"Found candidate website from link text: http://{link_text}")
                         
                         # Пытаемся извлечь реальный URL из href
                         extracted_url = extract_url_from_link_2gis(href)
                         if extracted_url:
                             # Проверяем, что это не служебный домен
                             if not any(domain in extracted_url.lower() for domain in excluded_domains):
-                                website = extracted_url
-                                logger.info(f"Extracted URL from link.2gis.ru href: {extracted_url}")
-                                break
+                                candidate_websites.append(extracted_url)
+                                logger.info(f"Found candidate website from link.2gis.ru href: {extracted_url}")
+                
+                # Если есть целевой сайт для фильтрации, выбираем наиболее подходящий
+                if candidate_websites and self._target_website:
+                    normalized_target = self._normalize_url_for_comparison(self._target_website)
+                    for candidate in candidate_websites:
+                        normalized_candidate = self._normalize_url_for_comparison(candidate)
+                        if normalized_candidate == normalized_target:
+                            website = candidate
+                            logger.info(f"Selected matching website: {website} (matches target: {self._target_website})")
+                            break
+                
+                # Если не нашли совпадение, берем первую подходящую
+                if not website and candidate_websites:
+                    website = candidate_websites[0]
+                    logger.info(f"Selected first candidate website: {website}")
             
             if website:
                 # Нормализуем URL (убираем протокол для сравнения, но возвращаем с протоколом)
