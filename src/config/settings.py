@@ -98,12 +98,19 @@ class AppConfig(BaseModel):
     chrome: ChromeSettings = Field(default_factory=ChromeSettings)
     writer: WriterOptions = Field(default_factory=WriterOptions)
 
+class EmailSettings(BaseModel):
+    smtp_server: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+
 class Settings(BaseModel):
     chrome: ChromeSettings = Field(default_factory=ChromeSettings)
     parser: ParserOptions = Field(default_factory=ParserOptions)
     log: LogOptions = Field(default_factory=LogOptions)
     app_config: AppConfig = Field(default_factory=AppConfig)
     proxy: ProxySettings = Field(default_factory=ProxySettings)
+    email_settings: Optional[EmailSettings] = None
     project_root: str = "."
     config_file: Optional[str] = None
     env_file: Optional[str] = None
@@ -136,13 +143,7 @@ class Settings(BaseModel):
                     self.app_config.password = os.getenv('SITE_PASSWORD')
 
                 if os.getenv('SMTP_SERVER'):
-                    if not hasattr(self, 'email_settings'):
-                        from pydantic import BaseModel
-                        class EmailSettings(BaseModel):
-                            smtp_server: str = ""
-                            smtp_port: int = 587
-                            smtp_user: str = ""
-                            smtp_password: str = ""
+                    if not self.email_settings:
                         self.email_settings = EmailSettings()
                     self.email_settings.smtp_server = os.getenv('SMTP_SERVER', '')
                     if os.getenv('SMTP_PORT'):
@@ -189,13 +190,7 @@ class Settings(BaseModel):
                                 setattr(self.proxy, key, value)
                     if 'email' in config_data:
                         email_data = config_data['email']
-                        if not hasattr(self, 'email_settings'):
-                            from pydantic import BaseModel
-                            class EmailSettings(BaseModel):
-                                smtp_server: str = ""
-                                smtp_port: int = 587
-                                smtp_user: str = ""
-                                smtp_password: str = ""
+                        if not self.email_settings:
                             self.email_settings = EmailSettings()
                         for key, value in email_data.items():
                             if hasattr(self.email_settings, key) and not os.getenv(f'SMTP_{key.upper()}'):

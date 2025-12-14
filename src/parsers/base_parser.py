@@ -107,4 +107,45 @@ class BaseParser(abc.ABC):
             except Exception as e:
                 logger.error(f"Error in progress callback: {e}", exc_info=True)
 
+    def _address_matches(self, card_address: str, target_address: str) -> bool:
+        """
+        Проверяет, соответствует ли адрес карточки целевому адресу.
+        Использует частичное совпадение (проверяет, содержит ли адрес карточки ключевые слова из целевого адреса).
+        Нормализует оба адреса для сравнения (убирает лишние пробелы, приводит к нижнему регистру).
+        """
+        if not card_address or not target_address:
+            return False
+        
+        import re
+        
+        def normalize_address(addr: str) -> str:
+            """Нормализует адрес для сравнения"""
+            # Приводим к нижнему регистру
+            addr = addr.strip().lower()
+            # Убираем лишние пробелы
+            addr = re.sub(r'\s+', ' ', addr)
+            # Убираем знаки препинания для более гибкого сравнения
+            addr = re.sub(r'[.,;:!?]', ' ', addr)
+            # Убираем лишние пробелы снова
+            addr = re.sub(r'\s+', ' ', addr).strip()
+            return addr
+        
+        normalized_card = normalize_address(card_address)
+        normalized_target = normalize_address(target_address)
+        
+        # Разбиваем целевой адрес на ключевые слова (исключаем служебные слова)
+        stop_words = {'ул', 'улица', 'пер', 'переулок', 'пр', 'проспект', 'пл', 'площадь', 'д', 'дом', 'корп', 'корпус', 'стр', 'строение', 'этаж', 'пом', 'помещение', 'к', 'кв', 'квартира'}
+        target_words = [w for w in normalized_target.split() if w and w not in stop_words and len(w) > 2]
+        
+        if not target_words:
+            # Если нет ключевых слов, используем простое частичное совпадение
+            return normalized_target in normalized_card
+        
+        # Проверяем, что все ключевые слова присутствуют в адресе карточки
+        # Используем частичное совпадение: хотя бы 70% ключевых слов должны совпадать
+        matched_words = sum(1 for word in target_words if word in normalized_card)
+        match_ratio = matched_words / len(target_words) if target_words else 0
+        
+        return match_ratio >= 0.7
+
 

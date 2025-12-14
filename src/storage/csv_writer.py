@@ -65,8 +65,11 @@ class CSVWriter(FileWriter):
         row = []
         for field in self.fieldnames:
             value = data.get(field)
+            # Проверяем None в начале
+            if value is None:
+                value = ''
             # Если значение - строка, убеждаемся что она в правильной кодировке
-            if isinstance(value, str):
+            elif isinstance(value, str):
                 # Убираем недопустимые символы и нормализуем
                 try:
                     # Проверяем, что строка правильно закодирована в UTF-8
@@ -95,10 +98,6 @@ class CSVWriter(FileWriter):
                     # В случае ошибки пытаемся сохранить хотя бы количество элементов
                     if isinstance(value, list):
                         value = f"[Error serializing {len(value)} items: {str(e)}]"
-                    else:
-                    value = str(value)
-            elif value is None:
-                value = ''
             else:
                 # Для других типов конвертируем в строку
                 try:
