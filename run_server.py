@@ -27,10 +27,10 @@ if sys.platform == 'win32':
         pass
 else:
     # Для Linux/Mac
-if hasattr(sys.stdout, 'reconfigure'):
     try:
-        sys.stdout.reconfigure(line_buffering=True, encoding='utf-8')
-    except:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(line_buffering=True, encoding='utf-8')
+    except Exception:
         pass
 
 if __name__ == "__main__":
@@ -48,7 +48,7 @@ if __name__ == "__main__":
         "src.webapp.app:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
+        reload=False,  # Отключено для стабильности на Windows
         log_level="info",
         access_log=True,
         use_colors=False,  # Отключаем цвета для лучшей совместимости
