@@ -75,12 +75,16 @@ def get_url_prefix(request: Request | None = None) -> str:
     Определяет префикс корневого пути для работы за reverse-proxy.
     Приоритет:
     1) request.scope['root_path'] (если настроен сервер, передающий root_path)
-    2) переменная окружения URL_PREFIX (можно задать в .env, например '/parser')
-    3) по умолчанию: пустая строка (приложение висит на корне)
+    2) заголовок X-Forwarded-Prefix (передается из Nginx)
+    3) переменная окружения URL_PREFIX (можно задать в .env, например '/parser')
+    4) по умолчанию: пустая строка (приложение висит на корне)
     """
     scope_prefix = ""
     if request is not None and hasattr(request, "scope"):
         scope_prefix = request.scope.get("root_path") or ""
+        # Также проверяем заголовок X-Forwarded-Prefix
+        if not scope_prefix and request.headers.get("X-Forwarded-Prefix"):
+            scope_prefix = request.headers.get("X-Forwarded-Prefix", "")
 
     env_prefix = os.getenv("URL_PREFIX", "").strip()
 

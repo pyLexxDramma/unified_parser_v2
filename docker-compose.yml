@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # Selenium Grid Hub и Node
+  selenium:
+    image: selenium/standalone-chrome:latest
+    container_name: unified_parser_selenium
+    ports:
+      - "4444:4444"
+      - "7900:7900"  # VNC для отладки (опционально)
+    environment:
+      - SE_VNC_NO_PASSWORD=1
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_SESSION_TIMEOUT=300
+    shm_size: 2gb
+    networks:
+      - parser_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4444/wd/hub/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Парсер приложение
+  parser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: unified_parser_app
+    ports:
+      - "8000:8000"
+    environment:
+      - SELENIUM_REMOTE_URL=http://selenium:4444/wd/hub
+      - PYTHONUNBUFFERED=1
+      - SITE_PASSWORD=${SITE_PASSWORD:-admin123}
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY:-change_me_in_production_session_secret}
+      - URL_PREFIX=${URL_PREFIX:-/parser}
+      # Proxy настройки (если нужны)
+      - PROXY_ENABLED=${PROXY_ENABLED:-false}
+      - PROXY_SERVER=${PROXY_SERVER:-}
+      - PROXY_PORT=${PROXY_PORT:-8080}
+      - PROXY_USERNAME=${PROXY_USERNAME:-}
+      - PROXY_PASSWORD=${PROXY_PASSWORD:-}
+      # Email настройки (если нужны)
+      - SMTP_SERVER=${SMTP_SERVER:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./config:/app/config
+    depends_on:
+      selenium:
+        condition: service_healthy
+    networks:
+      - parser_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/login"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx reverse proxy (опционально, для продакшена)
+  nginx:
+    image: nginx:alpine
+    container_name: unified_parser_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro  # SSL сертификаты
+    depends_on:
+      - parser
+    networks:
+      - parser_network
+    restart: unless-stopped
+    # Раскомментируйте, если хотите использовать Nginx
+    # profiles:
+    #   - production
+
+networks:
+  parser_network:
+    driver: bridge
