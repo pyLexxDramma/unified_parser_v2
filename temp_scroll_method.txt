@@ -1,0 +1,183 @@
+﻿
+>     def _scroll_to_load_all_reviews(self, expected_count: int = 0) -> None:
+          """
+          ╨Я╤А╨╛╨║╤А╤Г╤З╨╕╨▓╨░╨╡╤В ╤Б╤В╤А╨░╨╜╨╕╤Ж╤Г ╨╛╤В╨╖╤Л╨▓╨╛╨▓ 2GIS ╨┤╨╗╤П ╨╖╨░╨│╤А╤Г╨╖╨║╨╕ ╨▓╤Б╨╡╤Е ╨╛╤В╨╖╤Л╨▓╨╛╨▓
+.
+          ╨Ш╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╤В ╤В╨╡ ╨╢╨╡ ╤Б╨╡╨╗╨╡╨║╤В╨╛╤А╤Л, ╤З╤В╨╛ ╨╕ ╨┐╤А╨╕ ╨╕╨╖╨▓╨╗╨╡╤З╨╡╨╜╨╕╨╕ ╨╛╤В╨╖╤Л╨▓╨╛╨▓.
+          
+          Args:
+              expected_count: ╨Ю╨╢╨╕╨┤╨░╨╡╨╝╨╛╨╡ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨╛ ╨╛╤В╨╖╤Л╨▓╨╛╨▓ (╨┤╨╗╤П ╨╛╨┐╤В╨╕╨╝╨╕╨╖╨░╤Ж╨╕╨╕ ╨┐╤
+А╨╛╨║╤А╤Г╤В╨║╨╕)
+          """
+          try:
+              import time as time_module
+              start_time = time_module.time()
+              max_scroll_time = 600  # ╨г╨▓╨╡╨╗╨╕╤З╨╡╨╜╨╛ ╨┤╨╛ 10 ╨╝╨╕╨╜╤Г╤В ╨┤╨╗╤П ╨╖╨░╨│╤А╤Г╨╖╨║╨╕ ╨▓╤Б╨╡╤Е ╨╛╤В╨╖╤Л╨
+▓╨╛╨▓
+              scroll_iterations = 0
+              max_scrolls = self._reviews_scroll_iterations_max
+              no_change_count = 0
+              required_no_change = 25  # ╨г╨▓╨╡╨╗╨╕╤З╨╡╨╜╨╛ ╨┤╨╛ 25 ╨┤╨╗╤П ╨▒╨╛╨╗╨╡╨╡ ╤Б╤В╨░╨▒╨╕╨╗╤М╨╜╨╛╨╣ ╨╛╤Б╤В╨░╨╜╨╛
+╨▓╨║╨╕ (╨┐╤А╨╛╨┤╨╛╨╗╨╢╨░╨╡╨╝ ╨┐╤А╨╛╨║╤А╤Г╤В╨║╤Г ╨┤╨╛╨╗╤М╤И╨╡)
+              last_review_count = 0
+              max_no_change_iterations = 50  # ╨г╨▓╨╡╨╗╨╕╤З╨╡╨╜╨╛ ╨┤╨╛ 50 - ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨░╨╡╨╝ ╨┐╤А╨╛╨║╤А╤Г╤В╨║╤Г, ╨┐
+╨╛╨║╨░ ╨╜╨╡ ╨┐╨╡╤А╨╡╤Б╤В╨░╨╜╤Г╤В ╨┐╨╛╤П╨▓╨╗╤П╤В╤М╤Б╤П ╨╜╨╛╨▓╤Л╨╡
+              button_click_failures = 0  # ╨б╤З╨╡╤В╤З╨╕╨║ ╨╜╨╡╤Г╨┤╨░╤З╨╜╤Л╤Е ╨┐╨╛╨┐╤Л╤В╨╛╨║ ╨║╨╗╨╕╨║╨░ ╨╜╨░ ╨║╨╜╨╛╨┐╨║╤
+Г
+              max_button_click_failures = 3  # ╨Ь╨░╨║╤Б╨╕╨╝╤Г╨╝ ╨╜╨╡╤Г╨┤╨░╤З╨╜╤Л╤Е ╨┐╨╛╨┐╤Л╤В╨╛╨║ ╨║╨╗╨╕╨║╨░
+              
+              # ╨б╨╡╨╗╨╡╨║╤В╨╛╤А╤Л ╨┤╨╛╨╗╨╢╨╜╤Л ╤Б╨╛╨▓╨┐╨░╨┤╨░╤В╤М ╤Б ╤В╨╡╨╝╨╕, ╤З╤В╨╛ ╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╤О╤В╤Б╤П ╨┐╤А╨╕ 
+╨╕╨╖╨▓╨╗╨╡╤З╨╡╨╜╨╕╨╕ ╨╛╤В╨╖╤Л╨▓╨╛╨▓
+              review_selectors = [
+                  "div._1k5soqfl",  # ╨Ю╤Б╨╜╨╛╨▓╨╜╨╛╨╣ ╨║╨╗╨░╤Б╤Б ╨┤╨╗╤П ╨╛╤В╨╖╤Л╨▓╨╛╨▓ ╨▓ 2GIS
+                  '[data-review-id]',
+                  '[class*="review-item"]',
+                  'div[class*="review"]',
+                  'div[class*="_4db12d"]',  # ╨Р╨╗╤М╤В╨╡╤А╨╜╨░╤В╨╕╨▓╨╜╤Л╨╣ ╨║╨╗╨░╤Б╤Б
+                  'li[class*="review"]',
+              ]
+                  
+              logger.info(f"Starting scroll to load all reviews... (expected: {expected_count if expected_count > 0 els
+e 'unknown'})")
+              
+              # ╨Х╤Б╨╗╨╕ ╨╖╨╜╨░╨╡╨╝ ╨╛╨╢╨╕╨┤╨░╨╡╨╝╨╛╨╡ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨╛ ╨╛╤В╨╖╤Л╨▓╨╛╨▓, ╨╕╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╨╝ ╨╡╨│╨╛
+ ╨║╨░╨║ ╨╛╤А╨╕╨╡╨╜╤В╨╕╤А
+              target_reviews = expected_count if expected_count > 0 else None
+              
+              while scroll_iterations < max_scrolls:
+                  # ╨Я╤А╨╛╨▓╨╡╤А╤П╨╡╨╝ ╤В╨░╨╣╨╝╨░╤Г╤В
+                  elapsed_time = time_module.time() - start_time
+                  if elapsed_time > max_scroll_time:
+                      logger.warning(f"Scroll timeout after {elapsed_time:.1f}s, stopping")
+                      break
+                  
+                  if self._is_stopped():
+                      logger.info("2GIS reviews scroll: stop flag detected, breaking scroll loop")
+                      break
+                  
+                  # ╨Я╨╛╨╗╤Г╤З╨░╨╡╨╝ ╤В╨╡╨║╤Г╤Й╨╡╨╡ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨╛ ╨╛╤В╨╖╤Л╨▓╨╛╨▓
+                  page_source, soup = self._get_page_source_and_soup()
+                  current_review_count = 0
+                  for selector in review_selectors:
+                      found = soup.select(selector)
+                      # ╨д╨╕╨╗╤М╤В╤А╤Г╨╡╨╝ ╤Н╨╗╨╡╨╝╨╡╨╜╤В╤Л, ╨║╨╛╤В╨╛╤А╤Л╨╡ ╤П╨▓╨╜╨╛ ╨╜╨╡ ╤П╨▓╨╗╤П╤О╤В╤Б╤П ╨╛╤В╨╖╤Л╨▓╨░
+╨╝╨╕
+                      # ╨Ш╤Б╨┐╨╛╨╗╤М╨╖╤Г╨╡╨╝ ╤В╤Г ╨╢╨╡ ╨╝╨╕╨╜╨╕╨╝╨░╨╗╤М╨╜╤Г╤О ╨┤╨╗╨╕╨╜╤Г (3 ╤Б╨╕╨╝╨▓╨╛╨╗╨░), ╤З╤В╨╛ ╨╕ 
+╨┐╤А╨╕ ╨╛╨▒╤А╨░╨▒╨╛╤В╨║╨╡
+                      valid_reviews = [
+                          elem for elem in found 
+                          if elem.get_text(strip=True) and len(elem.get_text(strip=True)) >= 3
+                          and '╤З╨╕╤В╨░╤В╤М ╤Ж╨╡╨╗╨╕╨║╨╛╨╝' not in elem.get_text(strip=True).lower()
+                      ]
+                      current_review_count = max(current_review_count, len(valid_reviews))
+                  
+                  # ╨Ф╨╡╤В╨░╨╗╤М╨╜╨╛╨╡ ╨╗╨╛╨│╨╕╤А╨╛╨▓╨░╨╜╨╕╨╡ ╨┐╤А╨╛╤Ж╨╡╤Б╤Б╨░ ╨┐╤А╨╛╨║╤А╤Г╤В╨║╨╕
+                  elapsed_time = time_module.time() - start_time
+                  logger.info(
+                      f"Scroll iteration {scroll_iterations + 1}/{max_scrolls}: "
+                      f"found {current_review_count} reviews "
+                      f"(target: {target_reviews if target_reviews else 'unknown'}, "
+                      f"no_change: {no_change_count}/{required_no_change}, "
+                      f"elapsed: {elapsed_time:.1f}s)"
+                  )
+                  
+                  # ╨Я╤А╨╛╨▓╨╡╤А╤П╨╡╨╝, ╤Г╨▓╨╡╨╗╨╕╤З╨╕╨╗╨╛╤Б╤М ╨╗╨╕ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨╛ ╨╛╤В╨╖╤Л╨▓╨╛╨▓
+                  if current_review_count > last_review_count:
+                      last_review_count = current_review_count
+                      no_change_count = 0  # ╨б╨▒╤А╨░╤Б╤Л╨▓╨░╨╡╨╝ ╤Б╤З╨╡╤В╤З╨╕╨║ ╨┐╤А╨╕ ╨┐╨╛╤П╨▓╨╗╨╡╨╜╨╕╨╕ ╨╜╨╛╨▓╤Л╤Е ╨
+╛╤В╨╖╤Л╨▓╨╛╨▓
+                      logger.info(f"New reviews found! Total: {current_review_count}" + (f" / {target_reviews}" if targ
+et_reviews else ""))
+                      
+                      # ╨Х╤Б╨╗╨╕ ╨┤╨╛╤Б╤В╨╕╨│╨╗╨╕ ╤Ж╨╡╨╗╨╡╨▓╨╛╨│╨╛ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨░ ╨╛╤В╨╖╤Л╨▓╨╛╨▓, ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨
+░╨╡╨╝ ╨╡╤Й╨╡ ╨╜╨╡╨╝╨╜╨╛╨│╨╛ ╨┤╨╗╤П ╤Г╨▓╨╡╤А╨╡╨╜╨╜╨╛╤Б╤В╨╕
+                      # ╨г╨▓╨╡╨╗╨╕╤З╨╡╨╜╨╛ ╨┤╨╛ 98% ╨┤╨╗╤П ╨▒╨╛╨╗╨╡╨╡ ╨┐╨╛╨╗╨╜╨╛╨╣ ╨╖╨░╨│╤А╤Г╨╖╨║╨╕
+                      if target_reviews and current_review_count >= target_reviews * 0.98:  # 98% ╨╛╤В ╤Ж╨╡╨╗╨╡╨▓╨╛╨│╨╛
+                          logger.info(f"Reached {current_review_count} reviews (98%+ of target {target_reviews}), conti
+nuing to load remaining...")
+                  else:
+                      no_change_count += 1
+                      logger.debug(f"Review count unchanged: {current_review_count} (no_change: {no_change_count}/{requ
+ired_no_change})")
+                      
+                      # ╨Х╤Б╨╗╨╕ ╨╖╨╜╨░╨╡╨╝ ╤Ж╨╡╨╗╨╡╨▓╨╛╨╡ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨╛ ╨╕ ╨╡╤Й╨╡ ╨╜╨╡ ╨┤╨╛╤Б╤В╨╕╨│╨╗╨╕ ╨╡╨│╨╛,
+ ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨░╨╡╨╝ ╨┐╤А╨╛╨║╤А╤Г╤В╨║╤Г
+                      # ╨г╨▓╨╡╨╗╨╕╤З╨╕╨▓╨░╨╡╨╝ required_no_change ╨┤╨╗╤П ╤Ж╨╡╨╗╨╡╨▓╨╛╨│╨╛ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨░, ╤З╤В╨╛╨
+▒╤Л ╨╜╨╡ ╨╛╤Б╤В╨░╨╜╨░╨▓╨╗╨╕╨▓╨░╤В╤М╤Б╤П ╨┐╤А╨╡╨╢╨┤╨╡╨▓╤А╨╡╨╝╨╡╨╜╨╜╨╛
+                      if target_reviews and current_review_count < target_reviews:
+                          logger.debug(f"Review count {current_review_count} < target {target_reviews}, continuing scro
+ll... (no_change: {no_change_count})")
+                          # ╨Э╨╡ ╨╛╤Б╤В╨░╨╜╨░╨▓╨╗╨╕╨▓╨░╨╡╨╝╤Б╤П, ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨░╨╡╨╝ ╨┐╤А╨╛╨║╤А╤Г╤В╨║╤Г ╨┤╨░╨╢╨╡ ╨╡╤Б╨
+╗╨╕ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨╛ ╨╜╨╡ ╨╝╨╡╨╜╤П╨╡╤В╤Б╤П
+                          # ╨Ю╤Б╤В╨░╨╜╨░╨▓╨╗╨╕╨▓╨░╨╡╨╝╤Б╤П ╤В╨╛╨╗╤М╨║╨╛ ╨╡╤Б╨╗╨╕ ╨┤╨╛╤Б╤В╨╕╨│╨╗╨╕ ╤Ж╨╡╨╗╨╡╨▓╨╛╨│╨╛ ╨║╨╛
+╨╗╨╕╤З╨╡╤Б╤В╨▓╨░ ╨╕╨╗╨╕ ╨┐╤А╨╡╨▓╤Л╤Б╨╕╨╗╨╕ ╤В╨░╨╣╨╝╨░╤Г╤В
+                      # ╨Ю╤Б╤В╨░╨╜╨░╨▓╨╗╨╕╨▓╨░╨╡╨╝╤Б╤П ╤В╨╛╨╗╤М╨║╨╛ ╨╡╤Б╨╗╨╕:
+                      # 1. ╨Ф╨╛╤Б╤В╨╕╨│╨╗╨╕ ╤Ж╨╡╨╗╨╡╨▓╨╛╨│╨╛ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨░
+                      # 2. ╨Ш╨Ы╨Ш ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨╛ ╨╜╨╡ ╨╝╨╡╨╜╤П╨╡╤В╤Б╤П ╨▓ ╤В╨╡╤З╨╡╨╜╨╕╨╡ required_no_change ╨╕╤В╨
+╡╤А╨░╤Ж╨╕╨╣ ╨Ш ╨╝╤Л ╨╜╨╡ ╨╖╨╜╨░╨╡╨╝ ╤Ж╨╡╨╗╨╡╨▓╨╛╨│╨╛ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨░
+                      elif target_reviews and current_review_count >= target_reviews:
+                          logger.info(f"Reached target reviews count: {current_review_count} >= {target_reviews}, stopp
+ing scroll")
+                          break
+                      elif not target_reviews and no_change_count >= required_no_change:
+                          logger.info(f"Review count stable at {current_review_count} for {no_change_count} iterations,
+ stopping scroll")
+                          break
+                  
+                  # ╨Я╤А╨╛╨║╤А╤Г╤З╨╕╨▓╨░╨╡╨╝ ╤Б╤В╤А╨░╨╜╨╕╤Ж╤Г - ╨┐╤А╨╛╨▒╤Г╨╡╨╝ ╤А╨░╨╖╨╜╤Л╨╡ ╤Б╨┐╨╛╤Б╨╛╨▒╤Л
+                  try:
+                      # ╨б╨┐╨╛╤Б╨╛╨▒ 1: ╨Ъ╨╗╨╕╨║╨░╨╡╨╝ ╨╜╨░ "╨з╨╕╤В╨░╤В╤М ╤Ж╨╡╨╗╨╕╨║╨╛╨╝" ╨┤╨╗╤П ╨╖╨░╨│╤А╤Г╨╖╨║╨╕ ╨┐╨╛╨
+╗╨╜╨╛╨│╨╛ ╤В╨╡╨║╤Б╤В╨░ ╨╛╤В╨╖╤Л╨▓╨╛╨▓
+                      try:
+                          expand_reviews_script = """
+                          var expandLinks = document.querySelectorAll('span._17ww69i, a[class*="╤З╨╕╤В╨░╤В╤М"], [class*
+="╤З╨╕╤В╨░╤В╤М ╤Ж╨╡╨╗╨╕╨║╨╛╨╝"]');
+                          var clicked = 0;
+                          for (var i = 0; i < Math.min(expandLinks.length, 10); i++) {
+                              var link = expandLinks[i];
+                              if (link.offsetParent !== null) {
+                                  try {
+                                      link.click();
+                                      clicked++;
+                                  } catch(e) {}
+                              }
+                          }
+                          return clicked;
+                          """
+                          clicked_count = self.driver.execute_script(expand_reviews_script)
+                          if clicked_count > 0:
+                              logger.debug(f"Clicked 'read more' on {clicked_count} reviews")
+                              time.sleep(2.5)  # ╨г╨▓╨╡╨╗╨╕╤З╨╡╨╜╨╛ ╨┤╨╛ 2.5 ╤Б╨╡╨║ ╨┤╨╗╤П ╨╖╨░╨│╤А╤Г╨╖╨║╨╕ ╨┐╨╛╨╗╨╜╨╛╨
+│╨╛ ╤В╨╡╨║╤Б╤В╨░
+                      except Exception as click_error:
+                          logger.debug(f"Could not click 'read more' links: {click_error}")
+                      
+                      # ╨б╨┐╨╛╤Б╨╛╨▒ 2: ╨Ш╤Й╨╡╨╝ ╨╕ ╨║╨╗╨╕╨║╨░╨╡╨╝ ╨║╨╜╨╛╨┐╨║╤Г "╨Я╨╛╨║╨░╨╖╨░╤В╤М ╨╡╤Й╨╡" / "╨Ч╨░╨│╤А╤Г
+╨╖╨╕╤В╤М ╨╡╤Й╨╡"
+                      # ╨Я╤А╨╛╨▓╨╡╤А╤П╨╡╨╝ ╨╜╨░╨╗╨╕╤З╨╕╨╡ ╨║╨╜╨╛╨┐╨║╨╕ ╨┐╨╛╤Б╨╗╨╡ ╨║╨░╨╢╨┤╨╛╨╣ ╨┐╨╛╤А╤Ж╨╕╨╕, ╨╜╨╡ ╤В╨╛╨
+╗╤М╨║╨╛ ╨┐╤А╨╕ ╨┤╨╛╤Б╤В╨╕╨╢╨╡╨╜╨╕╨╕ 45 ╨╛╤В╨╖╤Л╨▓╨╛╨▓
+                      # ╨н╤В╨╛ ╨┐╨╛╨╖╨▓╨╛╨╗╤П╨╡╤В ╨╖╨░╨│╤А╤Г╨╢╨░╤В╤М ╨╛╤В╨╖╤Л╨▓╤Л ╨▒╨╛╨╗╨╡╨╡ ╨░╨│╤А╨╡╤Б╤Б╨╕╨▓╨╜╨╛
+                      should_check_button = (
+                          (current_review_count >= 20 and target_reviews and current_review_count < target_reviews) or
+                          (current_review_count % 20 == 0)  # ╨Я╤А╨╛╨▓╨╡╤А╤П╨╡╨╝ ╨║╨░╨╢╨┤╤Л╨╡ 20 ╨╛╤В╨╖╤Л╨▓╨╛╨▓
+                      )
+                      if should_check_button and button_click_failures < max_button_click_failures:
+                          try:
+                              # ╨б╨╛╤Е╤А╨░╨╜╤П╨╡╨╝ ╨║╨╛╨╗╨╕╤З╨╡╤Б╤В╨▓╨╛ ╨╛╤В╨╖╤Л╨▓╨╛╨▓ ╨┤╨╛ ╨║╨╗╨╕╨║╨░
+                              reviews_before_click = current_review_count
+                              
+                              # ╨С╨╛╨╗╨╡╨╡ ╨░╨│╤А╨╡╤Б╤Б╨╕╨▓╨╜╤Л╨╣ ╨┐╨╛╨╕╤Б╨║ ╨║╨╜╨╛╨┐╨╛╨║ "╨Я╨╛╨║╨░╨╖╨░╤В╤М ╨╡╤Й╨╡"
+                              load_more_script = """
+                              // ╨а╨░╤Б╤И╨╕╤А╨╡╨╜╨╜╤Л╨╣ ╨┐╨╛╨╕╤Б╨║ ╨║╨╜╨╛╨┐╨╛╨║ ╨╖╨░╨│╤А╤Г╨╖╨║╨╕
+                              var selectors = [
+                                  'button[class*="load"]', 'button[class*="more"]', 'button[class*="show"]',
+                                  'a[class*="load"]', 'a[class*="more"]', 'a[class*="show"]',
+                                  'span[class*="load"]', 'span[class*="more"]', 'span[class*="show"]',
+                                  '[class*="╨┐╨╛╨║╨░╨╖╨░╤В╤М"]', '[class*="╨╖╨░╨│╤А╤Г╨╖╨╕╤В╤М"]', '[class*="╨╡╤Й╨╡"]',
+                                  'button', 'a', 'span[role="button"]', '[onclick*="load"]'
+                              ];
+                              
+                              for (var s = 0; s < selectors.length; s++) {
+                                  var buttons = document.querySelectorAll(selectors[s]);
+
+

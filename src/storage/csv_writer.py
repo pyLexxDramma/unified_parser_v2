@@ -3,11 +3,23 @@ import csv
 import logging
 import os
 from typing import Any, Dict
+import datetime
 
 from src.storage.file_writer import FileWriter, FileWriterOptions
 from src.config.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+
+class DateTimeJSONEncoder:
+    """Кастомный encoder для JSON, который конвертирует datetime объекты в строки ISO формата"""
+    @staticmethod
+    def default(obj):
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()
+        elif isinstance(obj, datetime.date):
+            return obj.isoformat()
+        raise TypeError(f'Object of type {obj.__class__.__name__} is not JSON serializable')
 
 class CSVWriter(FileWriter):
     def __init__(self, settings: Settings):
@@ -89,7 +101,8 @@ class CSVWriter(FileWriter):
                     # Для списков отзывов логируем количество элементов
                     if field == 'detailed_reviews' and isinstance(value, list):
                         logger.debug(f"Serializing {len(value)} reviews to JSON for field '{field}'")
-                    value = json.dumps(value, ensure_ascii=False)
+                    # Используем кастомный encoder для обработки datetime объектов
+                    value = json.dumps(value, ensure_ascii=False, default=DateTimeJSONEncoder.default)
                     # Проверяем размер JSON-строки (CSV может иметь ограничения)
                     if len(value) > 1000000:  # Если больше 1MB, логируем предупреждение
                         logger.warning(f"Large JSON value for field '{field}': {len(value)} characters")

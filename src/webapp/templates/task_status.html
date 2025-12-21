@@ -28,65 +28,10 @@
         {% endif %}
         {% endif %}
         
-        <!-- Общий прогресс-бар с текстом статуса -->
+        <!-- Общий прогресс с текстом статуса и ориентировочным временем -->
         <div class="progress-container" id="progress-container" style="margin-top: 15px; {% if task.status == 'RUNNING' or task.status == 'PENDING' %}display: block;{% else %}display: none;{% endif %}">
-            <div class="progress-status-text" id="progress-status-text" style="margin-bottom: 10px; font-size: 0.95em; color: #555; min-height: 1.5em;">{{ task.progress or 'Инициализация...' }}</div>
-            <div class="progress-bar-wrapper" style="position: relative; width: 100%; background-color: #f0f0f0; border-radius: 8px; overflow: hidden; height: 24px;">
-                <div class="progress-bar-fill" id="progress-bar-fill" style="height: 100%; background: linear-gradient(90deg, #4CAF50 0%, #8BC34A 100%); width: 0%; transition: width 0.3s ease; display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 0.85em;"></div>
-            </div>
-        </div>
-        
-        <!-- Отдельные прогресс-бары для каждого этапа -->
-        <div class="progress-stages-container" id="progress-stages-container" style="margin-top: 20px; {% if task.status == 'RUNNING' or task.status == 'PENDING' %}display: block;{% else %}display: none;{% endif %}">
-            <h3 style="margin-bottom: 15px; font-size: 1.1em; color: #333;">Этапы парсинга:</h3>
-            
-            <!-- Этап 1: Поиск карточек -->
-            <div class="progress-stage" id="stage-search" style="margin-bottom: 15px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                    <span style="font-weight: 600; color: #555; font-size: 0.9em;">1. Поиск карточек</span>
-                    <span class="stage-percent" id="stage-search-percent" style="font-size: 0.85em; color: #888;">—</span>
-                </div>
-                <div class="stage-progress-bar" style="position: relative; width: 100%; background-color: #e0e0e0; border-radius: 6px; overflow: hidden; height: 20px;">
-                    <div class="stage-progress-fill" id="stage-search-fill" style="height: 100%; background: linear-gradient(90deg, #2196F3 0%, #42A5F5 100%); width: 0%; transition: width 0.3s ease;"></div>
-                </div>
-                <div class="stage-status" id="stage-search-status" style="font-size: 0.8em; color: #666; margin-top: 3px; min-height: 1.2em;">Ожидание...</div>
-            </div>
-            
-            <!-- Этап 2: Ранняя фильтрация по сайту -->
-            <div class="progress-stage" id="stage-filter" style="margin-bottom: 15px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                    <span style="font-weight: 600; color: #555; font-size: 0.9em;">2. Фильтрация по сайту</span>
-                    <span class="stage-percent" id="stage-filter-percent" style="font-size: 0.85em; color: #888;">—</span>
-                </div>
-                <div class="stage-progress-bar" style="position: relative; width: 100%; background-color: #e0e0e0; border-radius: 6px; overflow: hidden; height: 20px;">
-                    <div class="stage-progress-fill" id="stage-filter-fill" style="height: 100%; background: linear-gradient(90deg, #FF9800 0%, #FFB74D 100%); width: 0%; transition: width 0.3s ease;"></div>
-                </div>
-                <div class="stage-status" id="stage-filter-status" style="font-size: 0.8em; color: #666; margin-top: 3px; min-height: 1.2em;">Ожидание...</div>
-            </div>
-            
-            <!-- Этап 3: Полный парсинг карточек -->
-            <div class="progress-stage" id="stage-parse" style="margin-bottom: 15px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                    <span style="font-weight: 600; color: #555; font-size: 0.9em;">3. Парсинг карточек</span>
-                    <span class="stage-percent" id="stage-parse-percent" style="font-size: 0.85em; color: #888;">—</span>
-                </div>
-                <div class="stage-progress-bar" style="position: relative; width: 100%; background-color: #e0e0e0; border-radius: 6px; overflow: hidden; height: 20px;">
-                    <div class="stage-progress-fill" id="stage-parse-fill" style="height: 100%; background: linear-gradient(90deg, #9C27B0 0%, #BA68C8 100%); width: 0%; transition: width 0.3s ease;"></div>
-                </div>
-                <div class="stage-status" id="stage-parse-status" style="font-size: 0.8em; color: #666; margin-top: 3px; min-height: 1.2em;">Ожидание...</div>
-            </div>
-            
-            <!-- Этап 4: Парсинг отзывов -->
-            <div class="progress-stage" id="stage-reviews" style="margin-bottom: 15px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                    <span style="font-weight: 600; color: #555; font-size: 0.9em;">4. Парсинг отзывов</span>
-                    <span class="stage-percent" id="stage-reviews-percent" style="font-size: 0.85em; color: #888;">—</span>
-                </div>
-                <div class="stage-progress-bar" style="position: relative; width: 100%; background-color: #e0e0e0; border-radius: 6px; overflow: hidden; height: 20px;">
-                    <div class="stage-progress-fill" id="stage-reviews-fill" style="height: 100%; background: linear-gradient(90deg, #4CAF50 0%, #8BC34A 100%); width: 0%; transition: width 0.3s ease;"></div>
-                </div>
-                <div class="stage-status" id="stage-reviews-status" style="font-size: 0.8em; color: #666; margin-top: 3px; min-height: 1.2em;">Ожидание...</div>
-            </div>
+            <div class="progress-status-text" id="progress-status-text" style="margin-bottom: 8px; font-size: 1em; color: #333; min-height: 1.5em; font-weight: 500;">{{ task.progress or 'Инициализация...' }}</div>
+            <div class="progress-time-estimate" id="progress-time-estimate" style="font-size: 0.9em; color: #666; margin-top: 5px; min-height: 1.2em;">Оценка времени до завершения: рассчитывается...</div>
         </div>
         
         <!-- Время парсинга -->
@@ -181,11 +126,7 @@
     <section class="task-summary">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap: 10px; flex-wrap: wrap;">
             <h2 style="margin: 0;">Агрегированные метрики</h2>
-            <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                {% if task.status == 'COMPLETED' %}
-                    <a href="{{ (url_prefix or '') }}/tasks/{{ task.task_id }}/download-pdf" class="btn-download-pdf" style="padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 5px; font-weight: 600;">📥 Скачать PDF отчет</a>
-                    <a href="{{ (url_prefix or '') }}/tasks/{{ task.task_id }}/download-json" class="btn-download-json" style="padding: 10px 20px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: 600;">📥 Скачать JSON</a>
-                {% endif %}
+            {# Кнопки скачивания перенесены вниз страницы #}
                 {# Кнопка «Повторить последний парсинг» тоже относится к управлению задачей и скрыта.
                 Если нужно вернуть — раскомментировать блок ниже.
                 {% if task.status == 'COMPLETED' or task.status == 'FAILED' %}
@@ -239,17 +180,31 @@
                 
                 {% if statistics.get('2gis') %}
                     {% set gis_stats = statistics.get('2gis') %}
+                    {% set gis_card_rating = gis_stats.get('aggregated_card_rating_from_page', 0) or gis_stats.get('aggregated_rating', 0) %}
+                    {% set gis_reviews_count = gis_stats.get('aggregated_reviews_count', 0) %}
+                    {% set gis_ratings_count = gis_stats.get('aggregated_ratings_count', 0) %}
+                    {% set gis_answered = gis_stats.get('aggregated_answered_reviews_count', 0) %}
+                    {% set gis_neg = gis_stats.get('aggregated_negative_reviews', 0) %}
+                    {% set gis_neu = gis_stats.get('aggregated_neutral_reviews', 0) %}
+                    {% set gis_pos = gis_stats.get('aggregated_positive_reviews', 0) %}
+                    {% set gis_rated = gis_stats.get('aggregated_rated_reviews_count', 0) %}
                     <p><strong>2ГИС:</strong></p>
                     <ul style="list-style-type: none; padding-left: 0; margin-bottom: 1rem;">
                         <li>Количество карточек: <span style="color:#FFC107;">{{ gis_stats.get('total_cards_found', 0) }}</span></li>
-                        <li>Общий рейтинг: <span style="color:#FFC107;">{% if gis_stats.get('aggregated_rating', 0) and gis_stats.get('aggregated_rating', 0) > 0 %}{{ "%.1f"|format(gis_stats.get('aggregated_rating', 0)) }} {% if gis_stats.get('aggregated_rating', 0) >= 4 %}★★★★{% elif gis_stats.get('aggregated_rating', 0) >= 3 %}★★★{% elif gis_stats.get('aggregated_rating', 0) >= 2 %}★★{% elif gis_stats.get('aggregated_rating', 0) >= 1 %}★{% endif %}{% else %}—{% endif %}</span></li>
-                        <li>Всего отзывов: <span style="color:#FFC107;">{{ gis_stats.get('aggregated_reviews_count', 0) }}</span></li>
-                        <li>Отвечено на: <span style="color:#FFC107;">{{ gis_stats.get('aggregated_answered_reviews_count', 0) }}</span></li>
+                        <li>Общий рейтинг: <span style="color:#FFC107;">{% if gis_card_rating and gis_card_rating > 0 %}{{ "%.1f"|format(gis_card_rating) }} {% if gis_card_rating >= 4.5 %}★★★★★{% elif gis_card_rating >= 4 %}★★★★☆{% elif gis_card_rating >= 3.5 %}★★★☆☆{% elif gis_card_rating >= 3 %}★★★☆☆{% elif gis_card_rating >= 2.5 %}★★☆☆☆{% elif gis_card_rating >= 2 %}★★☆☆☆{% elif gis_card_rating >= 1.5 %}★☆☆☆☆{% elif gis_card_rating >= 1 %}★☆☆☆☆{% else %}☆☆☆☆☆{% endif %}{% else %}—{% endif %}</span></li>
+                        <li>Всего отзывов: <span style="color:#FFC107;">{{ gis_reviews_count }}</span></li>
+                        {% if gis_ratings_count > 0 %}
+                        <li>Всего оценок: <span style="color:#FFC107;">{{ gis_ratings_count }}</span></li>
+                        {% endif %}
+                        <li>Отвечено на: <span style="color:#FFC107;">{{ gis_answered }}</span></li>
                         <li>Средняя скорость ответа: <span style="color:#FFC107;">{% if gis_stats.get('aggregated_avg_response_time', 0) > 0 %}{{ "%.1f"|format(gis_stats.get('aggregated_avg_response_time', 0)) }} дн.{% else %}—{% endif %}</span></li>
-                        {% set gis_neg = gis_stats.get('aggregated_negative_reviews', 0) %}
-                        {% set gis_pos = gis_stats.get('aggregated_positive_reviews', 0) %}
                         <li>Негативных отзывов (1–2⭐): <span style="color:#FFC107;">{{ gis_neg }}</span></li>
+                        <li>Нейтральных отзывов (3⭐): <span style="color:#FFC107;">{{ gis_neu }}</span></li>
                         <li>Позитивных отзывов (4–5⭐): <span style="color:#FFC107;">{{ gis_pos }}</span></li>
+                        <li>Всего с оценкой: <span style="color:#FFC107;">{{ gis_neg + gis_neu + gis_pos }}</span></li>
+                        {% if gis_rated > 0 %}
+                        <li>С оценкой (1–5⭐): <span style="color:#FFC107;">{{ gis_rated }}</span></li>
+                        {% endif %}
                     </ul>
                 {% endif %}
             </div>
@@ -1078,5 +1033,52 @@
     {% endif %}
         </script>
         <script src="{{ (url_prefix or '') }}/static/task_status.js"></script>
+    
+    {# Кнопки скачивания внизу страницы #}
+    {% if task.status == 'COMPLETED' %}
+    <section id="download-section" style="margin-top: 40px; padding: 20px; background: #f5f5f5; border-radius: 8px; text-align: center;">
+        <h3 style="margin-bottom: 20px; color: #333;">Скачать отчеты</h3>
+        <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
+            <a href="{{ (url_prefix or '') }}/tasks/{{ task.task_id }}/download-pdf" class="btn-download-pdf" style="padding: 12px 24px; background: #2196F3; color: white; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">📥 Скачать PDF отчет</a>
+            <a href="{{ (url_prefix or '') }}/tasks/{{ task.task_id }}/download-json?filter_type=answered" class="btn-download-json-answered" style="padding: 12px 24px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">📥 JSON отзывов с ответами</a>
+            <a href="{{ (url_prefix or '') }}/tasks/{{ task.task_id }}/download-json?filter_type=unanswered" class="btn-download-json-unanswered" style="padding: 12px 24px; background: #FF9800; color: white; text-decoration: none; border-radius: 5px; font-weight: 600; display: inline-block;">📥 JSON отзывов без ответов</a>
+        </div>
+    </section>
+    {% endif %}
+    
+    <script>
+        // Переносим кнопки скачивания вниз при раскрытии карточек
+        (function() {
+            const downloadSection = document.getElementById('download-section');
+            if (!downloadSection) return;
+            
+            // Наблюдаем за изменениями в секции с карточками
+            const cardsSection = document.querySelector('.task-cards');
+            if (!cardsSection) return;
+            
+            // Функция для перемещения кнопок вниз
+            function moveDownloadButtonsToBottom() {
+                const cardsContainer = document.querySelector('.container.task-page');
+                if (cardsContainer && downloadSection.parentNode !== cardsContainer) {
+                    cardsContainer.appendChild(downloadSection);
+                }
+            }
+            
+            // Перемещаем кнопки сразу при загрузке
+            moveDownloadButtonsToBottom();
+            
+            // Наблюдаем за раскрытием карточек
+            const observer = new MutationObserver(function(mutations) {
+                moveDownloadButtonsToBottom();
+            });
+            
+            observer.observe(cardsSection, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['open']
+            });
+        })();
+    </script>
 </body>
 </html>

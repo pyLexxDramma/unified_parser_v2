@@ -75,16 +75,12 @@ def get_url_prefix(request: Request | None = None) -> str:
     Определяет префикс корневого пути для работы за reverse-proxy.
     Приоритет:
     1) request.scope['root_path'] (если настроен сервер, передающий root_path)
-    2) заголовок X-Forwarded-Prefix (передается из Nginx)
-    3) переменная окружения URL_PREFIX (можно задать в .env, например '/parser')
-    4) по умолчанию: пустая строка (приложение висит на корне)
+    2) переменная окружения URL_PREFIX (можно задать в .env, например '/parser')
+    3) по умолчанию: пустая строка (приложение висит на корне)
     """
     scope_prefix = ""
     if request is not None and hasattr(request, "scope"):
         scope_prefix = request.scope.get("root_path") or ""
-        # Также проверяем заголовок X-Forwarded-Prefix
-        if not scope_prefix and request.headers.get("X-Forwarded-Prefix"):
-            scope_prefix = request.headers.get("X-Forwarded-Prefix", "")
 
     env_prefix = os.getenv("URL_PREFIX", "").strip()
 
@@ -1506,7 +1502,13 @@ async def download_pdf_report(request: Request, task_id: str):
 
 
 @app.get("/tasks/{task_id}/download-json")
-async def download_json_report(request: Request, task_id: str):
+async def download_json_report(request: Request, task_id: str, filter_type: Optional[str] = None):
+    """
+    Скачивание JSON отчета с опциональной фильтрацией по ответам.
+    
+    Параметры:
+    - filter_type: 'answered' - только отзывы с ответами, 'unanswered' - только отзывы без ответов, None - все отзывы
+    """
     if not check_auth(request):
         return RedirectResponse(url="/login", status_code=302)
 
@@ -1527,6 +1529,31 @@ async def download_json_report(request: Request, task_id: str):
             else:
                 return str(obj)
         
+        # Фильтруем карточки по типу ответов, если указан filter_type
+        cards_data = task.detailed_results or []
+        if filter_type in ('answered', 'unanswered'):
+            filtered_cards = []
+            for card in cards_data:
+                filtered_card = card.copy()
+                detailed_reviews = card.get('detailed_reviews', [])
+                if isinstance(detailed_reviews, str):
+                    try:
+                        detailed_reviews = json.loads(detailed_reviews)
+                    except:
+                        detailed_reviews = []
+                
+                if filter_type == 'answered':
+                    # Только отзывы с ответами
+                    filtered_reviews = [r for r in detailed_reviews if isinstance(r, dict) and r.get('has_response', False)]
+                else:  # filter_type == 'unanswered'
+                    # Только отзывы без ответов
+                    filtered_reviews = [r for r in detailed_reviews if isinstance(r, dict) and not r.get('has_response', False)]
+                
+                filtered_card['detailed_reviews'] = filtered_reviews
+                filtered_card['card_reviews_count'] = len(filtered_reviews)
+                filtered_cards.append(filtered_card)
+            cards_data = filtered_cards
+        
         # Формируем JSON отчет со всеми данными задачи
         json_report = {
             "task_id": task.task_id,
@@ -1538,10 +1565,11 @@ async def download_json_report(request: Request, task_id: str):
             "start_time": task.start_time.isoformat() if task.start_time else None,
             "completed_at": task.end_time.isoformat() if task.end_time else None,
             "statistics": task.statistics or {},
-            "cards": task.detailed_results or [],
+            "cards": cards_data,
             "result_file": task.result_file,
             "progress": task.progress,
             "error": task.error,
+            "filter_type": filter_type,  # Указываем тип фильтрации в отчете
         }
 
         # Сериализуем в JSON с правильной кодировкой и обработкой datetime
@@ -1557,7 +1585,15 @@ async def download_json_report(request: Request, task_id: str):
         # Ограничиваем длину имени файла
         if len(safe_filename) > 50:
             safe_filename = safe_filename[:50]
-        json_filename = f"report_{safe_filename}_{task_id[:8]}.json"
+        
+        # Добавляем суффикс в зависимости от типа фильтрации
+        filter_suffix = ""
+        if filter_type == 'answered':
+            filter_suffix = "_with_answers"
+        elif filter_type == 'unanswered':
+            filter_suffix = "_without_answers"
+        
+        json_filename = f"report_{safe_filename}_{task_id[:8]}{filter_suffix}.json"
 
         # Используем правильную кодировку UTF-8 для JSON
         json_bytes = json_str.encode('utf-8')

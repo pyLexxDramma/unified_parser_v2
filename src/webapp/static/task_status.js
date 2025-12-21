@@ -89,31 +89,31 @@
             progressElement.textContent = data.progress || 'Обработка...';
         }
         
-        // Обновляем прогресс-бар с этапами
+        // Обновляем прогресс и расчет времени
         updateProgressStages(data.progress || '');
         
         // Логируем для отладки
         console.log('Status updated:', data.status, 'Progress:', data.progress);
     }
     
+    // Хранилище для расчета времени
+    let progressHistory = [];
+    const MAX_HISTORY = 10; // Храним последние 10 измерений
+    
     function updateProgressStages(progressText) {
         if (!progressText) progressText = '';
         
-        // Обновляем общий прогресс-бар
         const progressContainer = document.getElementById('progress-container');
         const progressStatusText = document.getElementById('progress-status-text');
-        const progressBarFill = document.getElementById('progress-bar-fill');
-        const progressStagesContainer = document.getElementById('progress-stages-container');
+        const progressTimeEstimate = document.getElementById('progress-time-estimate');
         
         const statusChip = document.querySelector('.status-chip');
         const taskStatus = statusChip ? statusChip.textContent.trim().toUpperCase() : '';
         
         if (taskStatus === 'RUNNING' || taskStatus === 'PENDING') {
             if (progressContainer) progressContainer.style.display = 'block';
-            if (progressStagesContainer) progressStagesContainer.style.display = 'block';
         } else {
             if (progressContainer) progressContainer.style.display = 'none';
-            if (progressStagesContainer) progressStagesContainer.style.display = 'none';
             return;
         }
         
@@ -121,127 +121,95 @@
             progressStatusText.textContent = progressText || 'Обработка...';
         }
         
-        // Обновляем общий прогресс-бар
-        let progressPercent = 0;
+        // Парсим прогресс для расчета времени
+        const text = progressText.toLowerCase();
+        let currentProgress = 0;
+        let totalItems = 0;
+        let processedItems = 0;
+        
+        // Пытаемся извлечь прогресс из текста
         const match = progressText.match(/(\d+)\s*[\/из]\s*(\d+)/);
         if (match) {
-            const current = parseInt(match[1]);
-            const total = parseInt(match[2]);
-            progressPercent = total > 0 ? Math.round((current / total) * 100) : 0;
-        } else if (progressText.includes('Агрегация') || progressText.includes('завершена') || progressText.includes('completed')) {
-            progressPercent = 100;
-        } else if (progressText.includes('Сканирование') || progressText.includes('Scanning')) {
-            progressPercent = 66;
-        } else if (progressText.includes('Поиск') || progressText.includes('Searching') || progressText.includes('Инициализация')) {
-            progressPercent = 33;
+            processedItems = parseInt(match[1]);
+            totalItems = parseInt(match[2]);
+            if (totalItems > 0) {
+                currentProgress = Math.min(100, Math.round((processedItems / totalItems) * 100));
+            }
         } else {
-            const cardsMatch = progressText.match(/найдено\s+(\d+)/);
-            if (cardsMatch) {
-                progressPercent = 50;
-            }
-        }
-        
-        progressPercent = Math.min(100, Math.max(0, progressPercent));
-        if (progressBarFill) {
-            progressBarFill.style.width = `${progressPercent}%`;
-            progressBarFill.textContent = progressPercent > 0 ? `${progressPercent}%` : '';
-        }
-        
-        // Обновляем отдельные прогресс-бары для каждого этапа
-        const text = progressText.toLowerCase();
-        const stages = {
-            search: { percent: 0, status: 'Ожидание...', active: false },
-            filter: { percent: 0, status: 'Ожидание...', active: false },
-            parse: { percent: 0, status: 'Ожидание...', active: false },
-            reviews: { percent: 0, status: 'Ожидание...', active: false }
-        };
-        
-        // Этап 1: Поиск карточек
-        if (text.includes('поиск карточек') || text.includes('инициализация') || text.includes('searching') || (text.includes('найдено') && text.includes('карточк'))) {
-            stages.search.active = true;
-            stages.search.status = progressText;
-            const foundMatch = progressText.match(/(\d+)\s*(?:карточек|cards|найдено)/i);
-            if (foundMatch) {
-                const found = parseInt(foundMatch[1]);
-                stages.search.percent = Math.min(100, (found / 100) * 100);
-            } else {
-                stages.search.percent = 50;
-            }
-        } else if (text.includes('завершена') && text.includes('поиск')) {
-            stages.search.percent = 100;
-            stages.search.status = 'Завершено';
-        }
-        
-        // Этап 2: Ранняя фильтрация по сайту
-        if (text.includes('проверка сайтов') || text.includes('ранняя фильтрация') || text.includes('фильтрация по сайту') || text.includes('применяю раннюю')) {
-            stages.filter.active = true;
-            stages.filter.status = progressText;
-            const filterMatch = progressText.match(/(\d+)\/(\d+)/);
-            if (filterMatch) {
-                const current = parseInt(filterMatch[1]);
-                const total = parseInt(filterMatch[2]);
-                stages.filter.percent = total > 0 ? Math.round((current / total) * 100) : 0;
-            } else if (text.includes('фильтрация завершена')) {
-                stages.filter.percent = 100;
-                stages.filter.status = 'Завершено';
-            } else {
-                stages.filter.percent = 10;
-            }
-        } else if (text.includes('фильтрация завершена') || (text.includes('->') && text.includes('карточек'))) {
-            stages.filter.percent = 100;
-            stages.filter.status = 'Завершено';
-        }
-        
-        // Этап 3: Парсинг карточек
-        if (text.includes('сканирование карточек') || text.includes('processing card') || text.includes('парсинг карточк')) {
-            stages.parse.active = true;
-            stages.parse.status = progressText;
-            const parseMatch = progressText.match(/(\d+)\/(\d+)/);
-            if (parseMatch) {
-                const current = parseInt(parseMatch[1]);
-                const total = parseInt(parseMatch[2]);
-                stages.parse.percent = total > 0 ? Math.round((current / total) * 100) : 0;
-            } else {
-                stages.parse.percent = 10;
-            }
-        }
-        
-        // Этап 4: Парсинг отзывов
-        if (text.includes('отзыв') || text.includes('review') || text.includes('reviews page') || text.includes('scrolling')) {
-            stages.reviews.active = true;
-            stages.reviews.status = progressText;
-            const reviewsMatch = progressText.match(/(\d+)\s*(?:отзыв|review)/i);
+            // Альтернативные паттерны
+            const reviewsMatch = progressText.match(/обработано\s+(\d+)\s*(?:из\s+(\d+)|отзыв)/i);
             if (reviewsMatch) {
-                const reviews = parseInt(reviewsMatch[1]);
-                stages.reviews.percent = Math.min(100, (reviews / 500) * 100);
+                processedItems = parseInt(reviewsMatch[1]);
+                totalItems = reviewsMatch[2] ? parseInt(reviewsMatch[2]) : 0;
+                if (totalItems > 0) {
+                    currentProgress = Math.min(100, Math.round((processedItems / totalItems) * 100));
+                }
+            } else if (text.includes('агрегация') || text.includes('завершена') || text.includes('completed')) {
+                currentProgress = 100;
+            } else if (text.includes('сканирование') || text.includes('scanning')) {
+                currentProgress = 66;
+            } else if (text.includes('поиск') || text.includes('searching') || text.includes('инициализация')) {
+                currentProgress = 33;
             } else {
-                stages.reviews.percent = 10;
+                const cardsMatch = progressText.match(/найдено\s+(\d+)/);
+                if (cardsMatch) {
+                    currentProgress = 50;
+                }
             }
         }
         
-        // Обновляем UI для каждого этапа
-        ['search', 'filter', 'parse', 'reviews'].forEach(stageName => {
-            const stage = stages[stageName];
-            const fillEl = document.getElementById(`stage-${stageName}-fill`);
-            const percentEl = document.getElementById(`stage-${stageName}-percent`);
-            const statusEl = document.getElementById(`stage-${stageName}-status`);
-            const stageEl = document.getElementById(`stage-${stageName}`);
-            
-            if (fillEl) {
-                fillEl.style.width = `${stage.percent}%`;
-            }
-            if (percentEl) {
-                percentEl.textContent = stage.percent > 0 ? `${stage.percent}%` : '—';
-                percentEl.style.color = stage.active ? '#333' : '#888';
-            }
-            if (statusEl) {
-                statusEl.textContent = stage.status;
-                statusEl.style.color = stage.active ? '#2196F3' : '#666';
-            }
-            if (stageEl) {
-                stageEl.style.opacity = stage.active ? '1' : '0.6';
-            }
+        // Сохраняем историю прогресса для расчета скорости
+        const now = Date.now();
+        progressHistory.push({
+            time: now,
+            progress: currentProgress,
+            processed: processedItems,
+            total: totalItems
         });
+        
+        // Ограничиваем размер истории
+        if (progressHistory.length > MAX_HISTORY) {
+            progressHistory.shift();
+        }
+        
+        // Рассчитываем ориентировочное время до завершения
+        let timeEstimate = '';
+        if (progressHistory.length >= 2 && currentProgress > 0 && currentProgress < 100) {
+            const first = progressHistory[0];
+            const last = progressHistory[progressHistory.length - 1];
+            const timeDiff = (last.time - first.time) / 1000; // секунды
+            const progressDiff = last.progress - first.progress;
+            
+            if (progressDiff > 0 && timeDiff > 0) {
+                const progressPerSecond = progressDiff / timeDiff;
+                const remainingProgress = 100 - currentProgress;
+                const secondsRemaining = remainingProgress / progressPerSecond;
+                
+                if (secondsRemaining > 0 && secondsRemaining < 86400) { // меньше суток
+                    const minutes = Math.floor(secondsRemaining / 60);
+                    const hours = Math.floor(minutes / 60);
+                    const remainingMinutes = minutes % 60;
+                    
+                    if (hours > 0) {
+                        timeEstimate = `Ориентировочное время до завершения: ~${hours} ч. ${remainingMinutes} мин.`;
+                    } else if (minutes > 0) {
+                        timeEstimate = `Ориентировочное время до завершения: ~${minutes} мин.`;
+                    } else {
+                        timeEstimate = `Ориентировочное время до завершения: ~${Math.ceil(secondsRemaining)} сек.`;
+                    }
+                } else {
+                    timeEstimate = 'Ориентировочное время до завершения: рассчитывается...';
+                }
+            } else {
+                timeEstimate = 'Ориентировочное время до завершения: рассчитывается...';
+            }
+        } else {
+            timeEstimate = 'Ориентировочное время до завершения: рассчитывается...';
+        }
+        
+        if (progressTimeEstimate) {
+            progressTimeEstimate.textContent = timeEstimate;
+        }
     }
     
     // Начинаем проверку статуса каждые 2 секунды (увеличена частота обновления)

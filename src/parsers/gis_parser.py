@@ -8,8 +8,9 @@ import hashlib
 import os
 import base64
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
+import datetime as dt_module
+from datetime import timedelta
+from bs4 import BeautifulSoup, Tag
 
 from src.drivers.base_driver import BaseDriver
 from src.config.settings import Settings
@@ -588,8 +589,10 @@ class GisParser(BaseParser):
         """
         reviews_info: Dict[str, Any] = {
             'reviews_count': 0,
+            'ratings_count': 0,  # Количество оценок из структуры страницы
             'positive_reviews': 0,
             'negative_reviews': 0,
+            'neutral_reviews': 0,  # Нейтральные отзывы (3⭐)
             'answered_count': 0,
             'unanswered_count': 0,
             'texts': [],
@@ -695,7 +698,7 @@ class GisParser(BaseParser):
                 if not firm_id:
                     firm_id = hashlib.md5(reviews_url.encode("utf-8")).hexdigest()[:8]
 
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                ts = dt_module.datetime.now().strftime("%Y%m%d_%H%M%S")
                 debug_path = os.path.join(debug_dir, f"reviews_{firm_id}_{ts}.html")
                 with open(debug_path, "w", encoding="utf-8") as f:
                     f.write(page_source)
@@ -761,6 +764,44 @@ class GisParser(BaseParser):
             
             logger.info(f"Expected total reviews count from card page: {reviews_count_total}")
             
+            # Обновляем прогресс с общим количеством отзывов
+            if reviews_count_total > 0:
+                self._update_progress(f"Парсинг отзывов: найдено {reviews_count_total} отзывов, начинаю обработку...")
+            
+            # Извлекаем количество оценок из структуры страницы
+            # Структура: <div class="_jspzdm">Количество оценок</div>
+            ratings_count_total = 0
+            ratings_count_selectors = [
+                'div._jspzdm',  # Точный селектор для количества оценок
+                'div[class*="_jspzdm"]',
+                '[class*="_jspzdm"]',
+            ]
+            for selector in ratings_count_selectors:
+                try:
+                    ratings_count_elems = soup_content.select(selector)
+                    for elem in ratings_count_elems:
+                        ratings_text = elem.get_text(strip=True)
+                        # Ищем число в тексте элемента
+                        if ratings_text.isdigit():
+                            ratings_count_total = int(ratings_text)
+                            logger.info(f"Found ratings count from card page structure (div._jspzdm): {ratings_count_total}")
+                            break
+                        # Ищем число в тексте элемента (может быть "123 оценок" или просто "123")
+                        ratings_match = re.search(r'(\d+)', ratings_text)
+                        if ratings_match:
+                            potential_count = int(ratings_match.group(1))
+                            if 0 < potential_count < 100000:  # Разумные пределы
+                                ratings_count_total = potential_count
+                                logger.info(f"Found ratings count via selector {selector}: {ratings_count_total}")
+                                break
+                    if ratings_count_total > 0:
+                        break
+                except Exception as e:
+                    logger.debug(f"Error with ratings count selector {selector}: {e}")
+                    continue
+            
+            logger.info(f"Found ratings count from card page: {ratings_count_total}")
+            
             # Извлекаем количество отвеченных отзывов из структуры страницы
             # Структура: <span class="_1iurgbx">С ответами</span>
             answered_reviews_count = 0
@@ -804,7 +845,31 @@ class GisParser(BaseParser):
                     logger.debug(f"Error with answered selector {selector}: {e}")
                     continue
             
-            # Если не нашли через селекторы, ищем в тексте страницы
+            # ПРИОРИТЕТ 3: Подсчитываем количество элементов с div._1wk3bjs (блок ответа организации)
+            # Это точный способ определения количества отвеченных отзывов
+            if answered_reviews_count == 0:
+                official_response_selectors = [
+                    'div._1wk3bjs',  # Точный селектор для блока ответа организации
+                    'div[class*="_1wk3bjs"]',
+                ]
+                for selector in official_response_selectors:
+                    try:
+                        official_response_elems = soup_content.select(selector)
+                        # Подсчитываем уникальные элементы с ответами
+                        # Фильтруем элементы, которые явно содержат ответ (не пустые и содержат текст)
+                        valid_response_elems = [
+                            elem for elem in official_response_elems
+                            if elem.get_text(strip=True) and len(elem.get_text(strip=True)) >= 3
+                        ]
+                        if len(valid_response_elems) > 0:
+                            answered_reviews_count = len(valid_response_elems)
+                            logger.info(f"Found answered reviews count via selector {selector} (counting div._1wk3bjs elements): {answered_reviews_count}")
+                            break
+                    except Exception as e:
+                        logger.debug(f"Error with official response selector {selector}: {e}")
+                        continue
+            
+            # ПРИОРИТЕТ 4: Если не нашли через селекторы, ищем в тексте страницы
             if answered_reviews_count == 0:
                 page_text = soup_content.get_text(separator=' ', strip=True)
                 answered_matches = re.findall(r'(\d+)\s*(?:с\s+ответами|ответами|ответ)', page_text, re.IGNORECASE)
@@ -886,8 +951,15 @@ class GisParser(BaseParser):
                 logger.info("Page has 'load more' button - will use infinite scroll approach")
 
             all_reviews: List[Dict[str, Any]] = []
+            # Шаг 1: Инициализация счетчиков для расчета среднего времени ответа (по предложенному плану)
+            # Используем timedelta для более точного расчета
+            total_response_time = timedelta(0)  # Сумма всех разниц во времени
+            count_with_replies = 0              # Количество отзывов, на которые был ответ
+            # Сохраняем старые переменные для совместимости
             response_time_sum_days: float = 0.0
             response_time_count: int = 0
+            # Сохраняем card_url для сохранения данных о датах ответов
+            current_card_url = card_url
             pages_to_process: List[str] = [reviews_url]
             if all_pages_urls:
                 # Обрабатываем только реально существующие страницы (не более 10 для оптимизации)
@@ -985,9 +1057,10 @@ class GisParser(BaseParser):
                     
                     logger.info(f"Found {len(review_elements)} review elements on page {page_url}")
                     
-                    # Логируем статистику по элементам для отладки
+                    # ЭТАП 1: Собираем все элементы отзывов (минимальная фильтрация)
+                    # Сохраняем все элементы для последующего детального парсинга
+                    collected_review_elements = []
                     skipped_count = 0
-                    processed_count = 0
                     
                     if len(review_elements) == 0:
                         # Пробуем найти отзывы через альтернативные методы
@@ -996,7 +1069,7 @@ class GisParser(BaseParser):
                         try:
                             debug_dir = os.path.join("debug", "2gis_reviews")
                             os.makedirs(debug_dir, exist_ok=True)
-                            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            ts = dt_module.datetime.now().strftime("%Y%m%d_%H%M%S")
                             debug_path = os.path.join(debug_dir, f"no_reviews_{ts}.html")
                             with open(debug_path, "w", encoding="utf-8") as f:
                                 f.write(page_source)
@@ -1005,35 +1078,97 @@ class GisParser(BaseParser):
                             logger.warning(f"Could not save debug HTML: {debug_error}")
                         continue
 
+                    # Собираем все элементы отзывов (только базовая фильтрация)
                     for review_elem in review_elements:
                         if self._is_stopped():
-                            logger.info("2GIS reviews: stop flag detected inside reviews loop, breaking")
+                            logger.info("2GIS reviews: stop flag detected during collection, breaking")
                             break
                         
-                        # Пропускаем элементы, которые явно не являются отзывами
+                        # Минимальная фильтрация: пропускаем только явно невалидные элементы
                         elem_text = review_elem.get_text(strip=True)
-                        # Ослабляем фильтр: принимаем элементы с текстом от 3 символов (было 5)
-                        # Это позволит не пропускать короткие, но валидные отзывы
                         if not elem_text or len(elem_text) < 3:
-                            if processed_count <= 5:  # Логируем только первые несколько пропусков
-                                logger.debug(f"Skipping element: text too short ({len(elem_text)} chars)")
                             skipped_count += 1
                             continue
-                        # Пропускаем элементы, которые выглядят как навигация или другие служебные элементы
+                        # Пропускаем элементы навигации
                         if any(skip_word in elem_text.lower() for skip_word in ['читать целиком', 'показать еще', 'следующая', 'предыдущая', 'страница']):
                             skipped_count += 1
                             continue
                         
-                        # НЕ пропускаем элементы на этом этапе - проверка ответов компании будет позже
-                        # после извлечения текста отзыва, чтобы не пропускать валидные отзывы
+                        # Сохраняем элемент для последующего парсинга
+                        collected_review_elements.append(review_elem)
+                    
+                    logger.info(f"Collected {len(collected_review_elements)} review elements for detailed parsing (skipped {skipped_count} invalid elements)")
+                    
+                    # ЭТАП 2: Парсим детали каждого отзыва в правильном порядке
+                    # Согласно предложению: сначала собираем все отзывы, потом парсим детали
+                    processed_count = 0
+                    for review_elem in collected_review_elements:
+                        if self._is_stopped():
+                            logger.info("2GIS reviews: stop flag detected inside reviews loop, breaking")
+                            break
                         
                         processed_count += 1
                         
-                        # Автор
-                        author_elem = review_elem.select_one(
-                            '[class*="author"], [class*="user"], [class*="name"]'
-                        )
-                        author_name = author_elem.get_text(strip=True) if author_elem else ""
+                        # Обновляем прогресс для каждого обработанного отзыва (каждые 3 отзыва для более частого обновления)
+                        if processed_count % 3 == 0 or processed_count == 1:
+                            total_expected = reviews_count_total if reviews_count_total > 0 else 0
+                            # Используем общее количество добавленных отзывов из всех страниц (не обработанных элементов, а реальных отзывов)
+                            total_processed = len(all_reviews)
+                            if total_expected > 0:
+                                self._update_progress(f"Парсинг отзывов: обработано {total_processed} из {total_expected}")
+                            else:
+                                self._update_progress(f"Парсинг отзывов: обработано {total_processed} отзывов")
+                        
+                        # ПАРСИНГ ДЕТАЛЕЙ ОТЗЫВА В ПРАВИЛЬНОМ ПОРЯДКЕ (согласно предложению):
+                        # 1. Автор отзыва: span._16s5yj36
+                        # 2. Дата отзыва: div._a5f6uz
+                        # 3. Текст отзыва: a._1msln3t
+                        # 4. Ответ организации: div._1wk3bjs
+                        # 5. Дата ответа организации: div._1evjsdb
+                        # 6. ID отзыва и ответа
+                        # 7. Время ответа (если есть ответ)
+                        
+                        # Инициализируем переменные для ID (нужны для генерации response_id)
+                        review_id = None
+                        response_id = None
+                        
+                        # Извлекаем ID отзыва заранее (нужен для генерации response_id)
+                        # ПРИОРИТЕТ 1: data-review-id атрибут
+                        review_id = review_elem.get('data-review-id') or review_elem.get('data-id') or review_elem.get('id')
+                        # ПРИОРИТЕТ 2: Ищем в дочерних элементах
+                        if not review_id:
+                            review_id_elem = review_elem.select_one('[data-review-id], [data-id]')
+                            if review_id_elem:
+                                review_id = review_id_elem.get('data-review-id') or review_id_elem.get('data-id')
+                        # ПРИОРИТЕТ 3: Ищем в ссылках (может быть в href)
+                        if not review_id:
+                            link_elem = review_elem.select_one('a[href*="review"], a[href*="отзыв"]')
+                            if link_elem:
+                                href = link_elem.get('href', '')
+                                # Извлекаем ID из URL, например /review/12345
+                                id_match = re.search(r'/review[\/\-]?(\d+)', href, re.IGNORECASE)
+                                if id_match:
+                                    review_id = id_match.group(1)
+                        
+                        # 1. Автор отзыва - используем точный селектор из структуры 2GIS
+                        # ПРИОРИТЕТ 1: Точный селектор span._16s5yj36 (согласно предложению)
+                        author_name = ""
+                        author_elem = review_elem.select_one('span._16s5yj36, span[class*="_16s5yj36"]')
+                        if author_elem:
+                            author_name = author_elem.get_text(strip=True)
+                            # Также проверяем атрибут title, если есть
+                            if not author_name:
+                                author_name = author_elem.get('title', '').strip()
+                        
+                        # Fallback: ищем в других селекторах
+                        if not author_name:
+                            author_elem = review_elem.select_one('[class*="author"], [class*="user"], [class*="name"], [title]')
+                            if author_elem:
+                                author_name = author_elem.get_text(strip=True)
+                                if not author_name:
+                                    author_name = author_elem.get('title', '').strip()
+                        
+                        # Fallback: извлекаем из текста элемента
                         if not author_name:
                             all_text = review_elem.get_text()
                             name_match = re.search(
@@ -1041,19 +1176,21 @@ class GisParser(BaseParser):
                             )
                             if name_match and len(name_match.group(1)) > 2:
                                 author_name = name_match.group(1)
+                        
                         if not author_name:
                             author_name = "Аноним"
 
-                        # Дата отзыва
-                        date_elem = review_elem.select_one('[class*="date"], time, [class*="time"]')
-                        review_date: Optional[datetime] = None
+                        # Дата отзыва - используем точный селектор из структуры 2GIS
+                        # ПРИОРИТЕТ 1: Точный селектор div._a5f6uz
+                        date_elem = review_elem.select_one('div._a5f6uz, div[class*="_a5f6uz"], [class*="date"], time, [class*="time"]')
+                        review_date: Optional[dt_module.datetime] = None
                         date_text = ""
                         if date_elem:
                             date_text = date_elem.get_text(strip=True)
                             datetime_attr = date_elem.get('datetime', '')
                             if datetime_attr:
                                 try:
-                                    review_date = datetime.fromisoformat(
+                                    review_date = dt_module.datetime.fromisoformat(
                                         datetime_attr.replace('Z', '+00:00')
                                     )
                                 except Exception:
@@ -1139,69 +1276,103 @@ class GisParser(BaseParser):
                         
                         logger.debug(f"Extracted rating: {rating_value} for review by {author_name}")
 
-                        # Текст отзыва - пробуем различные селекторы
-                        # Приоритет: сначала специфичные классы 2GIS, потом общие
-                        review_text_selectors = [
-                            '[class*="_1wlx08h"]',  # Класс для текста отзыва в 2GIS (сокращенный)
-                            '[class*="_msln3t"]',  # Класс для полного текста отзыва в 2GIS
-                            'div[class*="_kcpnuw"]',  # Класс для контента отзыва
-                            'div[class*="_1wk3bjs"]',  # Класс для текста ответа/отзыва
-                            'div[class*="text"]',
-                            '[class*="content"]',
-                            '[class*="comment"]',
-                            'p[class*="text"]',
-                            'div[class*="review-text"]',
-                            '[class*="text"][class*="review"]',
-                        ]
+                        # 3. Текст отзыва - используем точный селектор из структуры 2GIS
+                        # ПРИОРИТЕТ 1: Точный селектор a._1msln3t (согласно предложению)
+                        # ВАЖНО: На странице 2ГИС текст отзыва может быть в разных местах:
+                        # - a._1msln3t - ссылка с текстом отзыва (часто сокращенный)
+                        # - div внутри review_elem - полный текст отзыва
+                        # - После клика "читать целиком" текст раскрывается
                         review_text = ""
-                        for text_selector in review_text_selectors:
-                            text_elements = review_elem.select(text_selector)
-                            for text_element in text_elements:
-                                candidate_text = text_element.get_text(separator=' ', strip=True)
-                                candidate_text = ' '.join(candidate_text.split())
-                                
-                                # Очищаем от информации об авторе и количестве отзывов в начале
-                                # Убираем невидимые символы и имя автора с количеством отзывов
-                                candidate_text = re.sub(
-                                    r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[a-zA-Zа-яёА-ЯЁ0-9_\-]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
-                                    '',
-                                    candidate_text,
-                                    flags=re.IGNORECASE
-                                )
-                                # Дополнительная очистка для полных имен
-                                candidate_text = re.sub(
-                                    r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[А-ЯЁA-Z][а-яёa-z]+\s+[А-ЯЁA-Z][а-яёa-z]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
-                                    '',
-                                    candidate_text,
-                                    flags=re.IGNORECASE
-                                )
-                                candidate_text = re.sub(
-                                    r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[А-ЯЁA-Z][а-яёa-z]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
-                                    '',
-                                    candidate_text,
-                                    flags=re.IGNORECASE
-                                )
-                                
-                                # Очищаем от "Полезно?" в конце
-                                candidate_text = re.sub(
-                                    r'\s*(Полезно\??|полезно\??)\s*$',
-                                    '',
-                                    candidate_text,
-                                    flags=re.IGNORECASE
-                                )
-                                
-                                candidate_text = ' '.join(candidate_text.split()).strip()
-                                
-                                # Принимаем текст отзыва, если он не пустой и не слишком короткий
-                                # Уменьшили минимальную длину с 10 до 3 символов
-                                if candidate_text and len(candidate_text) >= 3:
-                                    # Исключаем тексты, которые выглядят как метаданные (только даты, имена и т.д.)
-                                    # Но только если текст очень короткий (меньше 20 символов)
-                                    if len(candidate_text) >= 20 or not re.match(r'^[\d\sа-яёА-ЯЁ,\.]+$', candidate_text):
-                                        review_text = candidate_text
+                        # Пробуем несколько вариантов селектора для текста отзыва
+                        text_elem = review_elem.select_one('a._1msln3t, a[class*="_1msln3t"], a[class*="msln3t"]')
+                        if text_elem:
+                            review_text = text_elem.get_text(separator=' ', strip=True)
+                        
+                        # Также пробуем найти текст в других местах
+                        if not review_text:
+                            # Ищем в div с похожими классами
+                            text_elem = review_elem.select_one('div[class*="_1msln3t"], div[class*="msln3t"], [class*="review-text"]')
+                            if text_elem:
+                                review_text = text_elem.get_text(separator=' ', strip=True)
+                        
+                        # Дополнительно: ищем текст в дочерних элементах, исключая служебные
+                        if not review_text or len(review_text) < 10:
+                            # Ищем все текстовые блоки внутри отзыва, исключая автора, дату, ответ
+                            text_candidates = []
+                            for child in review_elem.find_all(['div', 'p', 'span', 'a']):
+                                child_class = ' '.join(child.get('class', []))
+                                # Пропускаем служебные элементы
+                                if any(skip in child_class.lower() for skip in ['_16s5yj36', '_a5f6uz', '_1wk3bjs', '_1evjsdb', 'читать', 'целиком', 'показать']):
+                                    continue
+                                child_text = child.get_text(separator=' ', strip=True)
+                                if child_text and len(child_text) >= 10:  # Минимум 10 символов для валидного текста
+                                    text_candidates.append(child_text)
+                            
+                            # Берем самый длинный текст (скорее всего это основной текст отзыва)
+                            if text_candidates:
+                                review_text = max(text_candidates, key=len)
+                        
+                        # Fallback: пробуем другие селекторы, если точный не сработал
+                        if not review_text or len(review_text) < 3:
+                            review_text_selectors = [
+                                '[class*="_1wlx08h"]',  # Класс для текста отзыва в 2GIS (сокращенный)
+                                '[class*="_msln3t"]',  # Класс для полного текста отзыва в 2GIS
+                                'div[class*="_kcpnuw"]',  # Класс для контента отзыва
+                                'div[class*="text"]',
+                                '[class*="content"]',
+                                '[class*="comment"]',
+                                'p[class*="text"]',
+                                'div[class*="review-text"]',
+                                '[class*="text"][class*="review"]',
+                            ]
+                            for text_selector in review_text_selectors:
+                                text_elements = review_elem.select(text_selector)
+                                for text_element in text_elements:
+                                    candidate_text = text_element.get_text(separator=' ', strip=True)
+                                    candidate_text = ' '.join(candidate_text.split())
+                                    
+                                    # Очищаем от информации об авторе и количестве отзывов в начале
+                                    # Убираем невидимые символы и имя автора с количеством отзывов
+                                    candidate_text = re.sub(
+                                        r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[a-zA-Zа-яёА-ЯЁ0-9_\-]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                        '',
+                                        candidate_text,
+                                        flags=re.IGNORECASE
+                                    )
+                                    # Дополнительная очистка для полных имен
+                                    candidate_text = re.sub(
+                                        r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[А-ЯЁA-Z][а-яёa-z]+\s+[А-ЯЁA-Z][а-яёa-z]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                        '',
+                                        candidate_text,
+                                        flags=re.IGNORECASE
+                                    )
+                                    candidate_text = re.sub(
+                                        r'^[\s\u200b\u200c\u200d\u2060\u00a0]*[А-ЯЁA-Z][а-яёa-z]+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*\d+\s*[\s\u200b\u200c\u200d\u2060\u00a0]*отзыв[аов]*\s*',
+                                        '',
+                                        candidate_text,
+                                        flags=re.IGNORECASE
+                                    )
+                                    
+                                    # Очищаем от "Полезно?" в конце
+                                    candidate_text = re.sub(
+                                        r'\s*(Полезно\??|полезно\??)\s*$',
+                                        '',
+                                        candidate_text,
+                                        flags=re.IGNORECASE
+                                    )
+                                    
+                                    candidate_text = ' '.join(candidate_text.split()).strip()
+                                    
+                                    # Принимаем текст отзыва, если он не пустой и не слишком короткий
+                                    # Уменьшили минимальную длину с 10 до 3 символов
+                                    if candidate_text and len(candidate_text) >= 3:
+                                        # Исключаем тексты, которые выглядят как метаданные (только даты, имена и т.д.)
+                                        # Но только если текст очень короткий (меньше 20 символов)
+                                        if len(candidate_text) >= 20 or not re.match(r'^[\d\sа-яёА-ЯЁ,\.]+$', candidate_text):
+                                            review_text = candidate_text
+                                        break
+                                if review_text:
                                     break
-                            if review_text:
-                                break
 
                         # Если не нашли текст через селекторы, пробуем извлечь из всего элемента
                         # Но исключаем элементы с классом "читать целиком" и другие служебные элементы
@@ -1277,38 +1448,95 @@ class GisParser(BaseParser):
                                 if len(cleaned_text) >= 15 or not re.match(r'^[\d\sа-яёА-ЯЁ,\.\-]+$', cleaned_text):
                                     review_text = cleaned_text
 
-                        # Ответ организации
-                        answer_elem = review_elem.select_one(
-                            '[class*="answer"], [class*="reply"], [class*="response"]'
-                        )
+                        # 4. Ответ организации - используем точный селектор из структуры 2GIS
+                        # ПРИОРИТЕТ 1: Точный селектор div._1wk3bjs (согласно предложению)
+                        answer_elem = review_elem.select_one('div._1wk3bjs, div[class*="_1wk3bjs"]')
                         has_response = bool(answer_elem)
                         response_text = ""
-                        response_date: Optional[datetime] = None
+                        response_date: Optional[dt_module.datetime] = None
                         has_official_marker_in_answer = False  # Флаг для маркера "официальный ответ" в блоке ответа
+                        
+                        # Fallback: ищем в других селекторах, если точный не сработал
+                        if not answer_elem:
+                            answer_elem = review_elem.select_one('[class*="answer"], [class*="reply"], [class*="response"]')
+                            has_response = bool(answer_elem)
+                        
+                        # Также проверяем наличие даты ответа как признак наличия ответа
+                        if not has_response:
+                            response_date_check = review_elem.select_one('div._1evjsdb, div[class*="_1evjsdb"]')
+                            if response_date_check:
+                                has_response = True
+                                answer_elem = response_date_check.parent if response_date_check.parent else response_date_check
 
+                        # Извлекаем ID ответа из блока ответа
+                        response_id = None
                         if answer_elem:
+                            # Сначала извлекаем текст ответа (нужен для генерации ID)
                             response_text_elem = answer_elem.select_one(
-                                '[class*="text"], [class*="content"]'
+                                '[class*="text"], [class*="content"], div[class*="_1wk3bjs"]'
                             )
                             if response_text_elem:
                                 response_text = response_text_elem.get_text(strip=True)
                             else:
                                 response_text = answer_elem.get_text(strip=True)
+                            
+                            # ПРИОРИТЕТ 1: data-response-id или data-id атрибут в блоке ответа
+                            response_id = answer_elem.get('data-response-id') or answer_elem.get('data-id') or answer_elem.get('id')
+                            # ПРИОРИТЕТ 2: Ищем в дочерних элементах блока ответа
+                            if not response_id:
+                                response_id_elem = answer_elem.select_one('[data-response-id], [data-id]')
+                                if response_id_elem:
+                                    response_id = response_id_elem.get('data-response-id') or response_id_elem.get('data-id')
+                            # ПРИОРИТЕТ 3: Генерируем ID на основе review_id и содержимого ответа
+                            if not response_id and review_id:
+                                response_content_hash = hashlib.md5(
+                                    f"{review_id}_{response_text[:50] if response_text else ''}".encode('utf-8')
+                                ).hexdigest()[:16]
+                                response_id = f"resp_{response_content_hash}"
+                            # ПРИОРИТЕТ 4: Если нет review_id, генерируем на основе содержимого
+                            if not response_id:
+                                response_content_hash = hashlib.md5(
+                                    f"{author_name}_{date_text}_response_{response_text[:50] if response_text else ''}".encode('utf-8')
+                                ).hexdigest()[:16]
+                                response_id = f"resp_{response_content_hash}"
 
-                            response_date_elem = answer_elem.select_one(
-                                '[class*="date"], time'
-                            )
+                            # 5. Дата ответа организации - используем точный селектор из структуры 2GIS
+                            # ПРИОРИТЕТ 1: Точный селектор div._1evjsdb (согласно предложению)
+                            response_date_elem = answer_elem.select_one('div._1evjsdb, div[class*="_1evjsdb"]')
+                            # Fallback: ищем в других селекторах
+                            if not response_date_elem:
+                                response_date_elem = answer_elem.select_one('[class*="date"], time, [class*="response-date"], [class*="answer-date"]')
                             if response_date_elem:
                                 response_date_text = response_date_elem.get_text(strip=True)
-                                response_date = parse_russian_date(response_date_text)
+                                if not response_date_text:
+                                    # Пробуем извлечь из атрибутов
+                                    response_date_text = response_date_elem.get('datetime', '') or response_date_elem.get('data-date', '')
+                                if response_date_text:
+                                    response_date = parse_russian_date(response_date_text)
                             
                             # Проверяем маркер "официальный ответ" ТОЛЬКО в блоке ответа
                             answer_text = answer_elem.get_text(separator=' ', strip=True).lower() if answer_elem else ""
                             has_official_marker_in_answer = 'официальный ответ' in answer_text or 'ответ компании' in answer_text or 'ответ организации' in answer_text
+                        else:
+                            # Если ответа нет, response_id остается None
+                            response_id = None
+                        
+                        # Если ответ найден, но дата не извлечена, пробуем найти дату в самом элементе отзыва
+                        if has_response and not response_date:
+                            # Ищем дату ответа напрямую в элементе отзыва (div._1evjsdb)
+                            response_date_elem_direct = review_elem.select_one('div._1evjsdb, div[class*="_1evjsdb"]')
+                            if response_date_elem_direct:
+                                response_date_text = response_date_elem_direct.get_text(strip=True)
+                                if not response_date_text:
+                                    response_date_text = response_date_elem_direct.get('datetime', '') or response_date_elem_direct.get('data-date', '')
+                                if response_date_text:
+                                    response_date = parse_russian_date(response_date_text)
+                                    logger.debug(f"Extracted response_date from direct search: {response_date}")
 
                         # 2ГИС часто помечает официальный ответ только текстом
                         # вида "29 мая 2025, официальный ответ" без специальных классов.
                         # Если специальных блоков нет, пробуем найти такой текст в общем содержимом.
+                        # ВАЖНО: Если ранняя проверка уже нашла ответ, не перезаписываем has_response
                         if not has_response:
                             full_text = review_elem.get_text(separator=' ', strip=True)
                             full_text_lower = full_text.lower()
@@ -1571,9 +1799,12 @@ class GisParser(BaseParser):
                                         skipped_count += 1
                                         continue
                         
-                        # Пропускаем элементы без рейтинга, которые являются ответами (has_response=True, но нет рейтинга)
+                        # Проверяем, является ли это валидным отзывом с ответом
+                        is_valid_review_with_response = has_response and (response_text or response_date)
+                        
+                        # Пропускаем только чистые ответы компании БЕЗ отзыва пользователя
                         if has_response and rating_value == 0 and (not review_text or len(review_text.strip()) < 10):
-                            logger.debug(f"Skipping response without rating: author={author_name}, text_len={len(review_text) if review_text else 0}")
+                            logger.debug(f"Skipping response without rating and text: author={author_name}, text_len={len(review_text) if review_text else 0}")
                             skipped_count += 1
                             continue
                         
@@ -1587,17 +1818,36 @@ class GisParser(BaseParser):
                                 skipped_count += 1
                                 continue
                         
-                        # Пропускаем только элементы без рейтинга И без текста (или с очень коротким текстом < 3 символов)
-                        # Принимаем отзывы с рейтингом ИЛИ с текстом (даже коротким, если есть рейтинг)
-                        if rating_value == 0 and (not review_text or len(review_text.strip()) < 3):
+                        # Пропускаем только элементы без рейтинга И без текста И без ответа
+                        # Принимаем отзывы с рейтингом ИЛИ с текстом ИЛИ с ответом
+                        if rating_value == 0 and (not review_text or len(review_text.strip()) < 3) and not is_valid_review_with_response:
                             if processed_count <= 20 or skipped_count % 10 == 0:
-                                logger.debug(f"Skipping element without rating and text: author={author_name}")
+                                logger.debug(f"Skipping element without rating, text, and response: author={author_name}, has_response={has_response}")
                             skipped_count += 1
                             continue
                         
-                        # Принимаем элементы с рейтингом ИЛИ с текстом (минимум 3 символа)
-                        if rating_value > 0 or (review_text and len(review_text.strip()) >= 3):
+                        # Принимаем элементы с рейтингом ИЛИ с текстом (минимум 3 символа) ИЛИ с ответом
+                        if rating_value > 0 or (review_text and len(review_text.strip()) >= 3) or is_valid_review_with_response:
+                            # review_id уже извлечен выше в начале парсинга (из атрибутов, ссылок и т.д.)
+                            # ПРИОРИТЕТ 4: Если не найден, генерируем на основе содержимого (хэш)
+                            # ТЕПЕРЬ author_name и date_text уже определены, можно использовать для генерации
+                            if not review_id:
+                                # Используем хэш от автора, даты и начала текста для уникальности
+                                review_content_hash = hashlib.md5(
+                                    f"{author_name}_{date_text}_{review_text[:50] if review_text else review_elem.get_text(strip=True)[:50]}".encode('utf-8')
+                                ).hexdigest()[:16]
+                                review_id = f"hash_{review_content_hash}"
+                            
+                            # ВАЖНО: Убеждаемся, что review_id установлен (для использования в API)
+                            if not review_id:
+                                # Финальный fallback: генерируем на основе всего элемента
+                                review_content_hash = hashlib.md5(
+                                    f"{review_elem.get_text(strip=True)[:100]}".encode('utf-8')
+                                ).hexdigest()[:16]
+                                review_id = f"hash_{review_content_hash}"
+                            
                             review_data = {
+                                    'review_id': review_id,  # ID отзыва для использования в API
                                     'review_rating': rating_value,
                                     'review_text': review_text or "",
                                     'review_author': author_name or "Аноним",
@@ -1606,6 +1856,7 @@ class GisParser(BaseParser):
                                     else (date_text or ""),
                                     'review_date_datetime': review_date,  # Сохраняем исходный datetime объект для вычисления времени ответа
                                     'has_response': has_response,
+                                    'response_id': response_id if has_response else None,  # ID ответа для использования в API (только если есть ответ)
                                     'response_text': response_text,
                                     'response_date': format_russian_date(response_date)
                                     if response_date
@@ -1613,6 +1864,15 @@ class GisParser(BaseParser):
                                     'response_date_datetime': response_date,  # Сохраняем исходный datetime объект для вычисления времени ответа
                                 }
                             all_reviews.append(review_data)
+                            
+                            # Обновляем прогресс после добавления отзыва (каждые 3 отзыва для более частого обновления)
+                            if len(all_reviews) % 3 == 0 or len(all_reviews) == 1:
+                                total_expected = reviews_count_total if reviews_count_total > 0 else 0
+                                total_processed = len(all_reviews)
+                                if total_expected > 0:
+                                    self._update_progress(f"Парсинг отзывов: обработано {total_processed} из {total_expected}")
+                                else:
+                                    self._update_progress(f"Парсинг отзывов: обработано {total_processed} отзывов")
 
                             # Классификация, как и для Яндекса:
                             # 1–2★ — негатив, 3★ — нейтрально, 4–5★ — позитив.
@@ -1620,6 +1880,8 @@ class GisParser(BaseParser):
                             if rating_value > 0:
                                 if rating_value >= 4:
                                     reviews_info['positive_reviews'] += 1
+                                elif rating_value == 3:
+                                    reviews_info['neutral_reviews'] += 1
                                 elif rating_value in (1, 2):
                                     reviews_info['negative_reviews'] += 1
 
@@ -1628,17 +1890,35 @@ class GisParser(BaseParser):
                             else:
                                 reviews_info['unanswered_count'] += 1
 
+                            # Шаг 3: Извлечение данных и расчет внутри цикла парсинга (по предложенному плану)
                             # Накапливаем время ответа для расчёта среднего
                             # ВАЖНО: вычисляем только для отзывов пользователей с ответами компании
-                            # Формула: среднее время = сумма всех времен ответа / количество отзывов с ответами
+                            # Используем timedelta для более точного расчета
                             if has_response and review_date and response_date:
                                 try:
-                                    # Вычисляем разницу между датой ответа и датой отзыва в днях
-                                    delta = (response_date - review_date).days
-                                    if delta >= 0:  # Ответ должен быть после отзыва
-                                        response_time_sum_days += float(delta)
+                                    # Сохраняем данные о датах в отдельный список для последующего расчета
+                                    if hasattr(self, '_response_dates_data'):
+                                        self._response_dates_data.append({
+                                            'card_url': current_card_url,
+                                            'review_date': review_date.isoformat() if isinstance(review_date, dt_module.datetime) else str(review_date),
+                                            'response_date': response_date.isoformat() if isinstance(response_date, dt_module.datetime) else str(response_date),
+                                        })
+                                    
+                                    # Вычисляем разницу между датой ответа и датой отзыва (timedelta)
+                                    time_difference = response_date - review_date
+                                    
+                                    # Проверяем, что ответ не пришел раньше отзыва (проверка на логику)
+                                    if time_difference >= timedelta(0):
+                                        # Накапливаем данные в глобальных переменных (Шаг 1)
+                                        total_response_time += time_difference
+                                        count_with_replies += 1
+                                        
+                                        # Также сохраняем в старых переменных для совместимости (в днях)
+                                        delta_days = time_difference.days
+                                        response_time_sum_days += float(delta_days)
                                         response_time_count += 1
-                                        logger.debug(f"Added response time: {delta} days (review: {review_date}, response: {response_date})")
+                                        
+                                        logger.debug(f"Added response time: {time_difference} ({delta_days} days) (review: {review_date}, response: {response_date})")
                                 except Exception as e:
                                     logger.debug(f"Error calculating response time: {e}")
                                     pass
@@ -1674,6 +1954,15 @@ class GisParser(BaseParser):
                         f"processed {processed_count}, skipped {skipped_count}, "
                         f"added {added_reviews} reviews"
                     )
+                    
+                    # Обновляем прогресс после обработки страницы
+                    total_expected = reviews_count_total if reviews_count_total > 0 else 0
+                    total_processed = len(all_reviews)
+                    if total_expected > 0:
+                        self._update_progress(f"Парсинг отзывов: обработано {total_processed} из {total_expected}")
+                    else:
+                        self._update_progress(f"Парсинг отзывов: обработано {total_processed} отзывов")
+                    
                     if skipped_count > processed_count * 0.5:  # Если пропущено больше 50% элементов
                         logger.warning(
                             f"High skip rate on page {page_url}: {skipped_count}/{len(review_elements)} elements skipped. "
@@ -1699,12 +1988,20 @@ class GisParser(BaseParser):
                 reviews_info['reviews_count'] = len(all_reviews)
                 logger.info(f"Using parsed reviews count: {len(all_reviews)} (no structure count found)")
             
-            # Разделяем отзывы на блоки: позитивные, негативные, с ответом
+            # Сохраняем количество оценок из структуры страницы
+            if ratings_count_total > 0:
+                reviews_info['ratings_count'] = ratings_count_total
+                logger.info(f"Using ratings count from card page structure: {ratings_count_total}")
+            else:
+                reviews_info['ratings_count'] = 0
+            
+            # Разделяем отзывы на блоки: позитивные, негативные, нейтральные, с ответом
             positive_reviews_list = [r for r in all_reviews if r.get('review_rating', 0) >= 4]
             negative_reviews_list = [r for r in all_reviews if r.get('review_rating', 0) in (1, 2)]
+            neutral_reviews_list = [r for r in all_reviews if r.get('review_rating', 0) == 3]
             answered_reviews_list = [r for r in all_reviews if r.get('has_response', False)]
             
-            logger.info(f"Reviews grouped: positive={len(positive_reviews_list)}, negative={len(negative_reviews_list)}, answered={len(answered_reviews_list)}")
+            logger.info(f"Reviews grouped: positive={len(positive_reviews_list)}, negative={len(negative_reviews_list)}, neutral={len(neutral_reviews_list)}, answered={len(answered_reviews_list)}")
             
             # ВАЖНО: вычисляем среднее время ответа ТОЛЬКО для блока "С ответом"
             # Используем исходные datetime объекты из review_data, если они есть
@@ -1739,14 +2036,31 @@ class GisParser(BaseParser):
                         elif delta >= 3650:
                             logger.warning(f"Unrealistic response time delta: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
             
-            # Вычисляем среднее время ответа для блока "С ответом"
-            if answered_response_time_count > 0:
-                avg_response_time_answered = round(answered_response_time_sum / answered_response_time_count, 1)
-                reviews_info['avg_response_time_days'] = avg_response_time_answered
-                logger.info(f"Calculated average response time for answered reviews block: {avg_response_time_answered} days (from {answered_response_time_count} answered reviews)")
+            # Шаг 4: Финальный расчет среднего времени ответа (после завершения цикла парсинга)
+            # Используем данные, накопленные в цикле (total_response_time и count_with_replies)
+            logger.info("\n--- АГРЕГИРОВАННЫЕ ДАННЫЕ ДЛЯ РАСЧЕТА СРЕДНЕГО ВРЕМЕНИ ОТВЕТА ---")
+            
+            if count_with_replies > 0:
+                # Среднее время (получится объект timedelta)
+                average_time = total_response_time / count_with_replies
+                # Конвертируем в дни для совместимости
+                avg_response_time_days = average_time.total_seconds() / 86400.0
+                
+                logger.info(f"Количество отзывов с ответом: {count_with_replies}")
+                logger.info(f"Общее накопленное время ожидания: {total_response_time} ({total_response_time.total_seconds() / 86400.0:.1f} дней)")
+                logger.info(f"СРЕДНЕЕ ВРЕМЯ ОТВЕТА: {average_time} ({avg_response_time_days:.1f} дней)")
+                
+                reviews_info['avg_response_time_days'] = round(avg_response_time_days, 1)
             else:
-                reviews_info['avg_response_time_days'] = 0.0
-                logger.info("No response time data available for answered reviews block")
+                logger.info("Ответов организации не найдено для расчета среднего времени.")
+                # Fallback: используем расчет из answered_reviews_list, если основной расчет не дал результатов
+                if answered_response_time_count > 0:
+                    avg_response_time_answered = round(answered_response_time_sum / answered_response_time_count, 1)
+                    reviews_info['avg_response_time_days'] = avg_response_time_answered
+                    logger.info(f"Using fallback calculation: {avg_response_time_answered} days (from {answered_response_time_count} answered reviews)")
+                else:
+                    reviews_info['avg_response_time_days'] = 0.0
+                    logger.info("No response time data available for answered reviews block")
             
             # ВАЖНО: используем количество отвеченных отзывов из структуры страницы для агрегированной информации
             # Это точное значение, которое отображается на странице карточки
@@ -1759,10 +2073,14 @@ class GisParser(BaseParser):
                 reviews_info['answered_count'] = parsed_answered_count
                 logger.info(f"Using parsed answered reviews count: {parsed_answered_count} (no structure count found)")
             
+            # Сохраняем рейтинг карточки из структуры страницы
+            reviews_info['card_rating_from_page'] = card_rating_from_page
+            
             # Сохраняем отзывы разделенными по блокам
             reviews_info['details'] = all_reviews  # Все отзывы
             reviews_info['positive_reviews_list'] = positive_reviews_list  # Блок позитивных
             reviews_info['negative_reviews_list'] = negative_reviews_list  # Блок негативных
+            reviews_info['neutral_reviews_list'] = neutral_reviews_list  # Блок нейтральных
             reviews_info['answered_reviews_list'] = answered_reviews_list  # Блок с ответом
             
             # Логируем статистику по найденным отзывам
@@ -2734,6 +3052,12 @@ class GisParser(BaseParser):
             'total_response_time_sum_days': 0.0,
             'total_response_time_calculated_count': 0,
         }
+        
+        # Создаем папку для сохранения данных о датах ответов
+        self._response_dates_dir = os.path.join("output", "response_dates")
+        os.makedirs(self._response_dates_dir, exist_ok=True)
+        self._response_dates_file = os.path.join(self._response_dates_dir, f"response_dates_{dt_module.datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        self._response_dates_data: List[Dict[str, Any]] = []  # Список для хранения данных о датах ответов
 
         card_data_list: List[Dict[str, Any]] = []
 
@@ -3180,6 +3504,9 @@ class GisParser(BaseParser):
                         else:
                             logger.debug(f"Извлечен сайт из 2GIS карточки '{name}': {website}")
 
+                    # Обновляем прогресс перед началом парсинга отзывов
+                    self._update_progress(f"Парсинг отзывов для карточки {idx}/{min(len(filtered_card_urls), self._max_records)}: {name[:50]}")
+                    
                     reviews_data = self._get_card_reviews_info_2gis(card_url)
 
                     if not name:
@@ -3189,6 +3516,13 @@ class GisParser(BaseParser):
                     # Используем данные из snippet для агрегированной информации (точные данные со страницы поиска)
                     # Для детальных отзывов используем данные из парсинга страницы карточки
                     detailed_reviews_list = reviews_data.get('details', [])
+                    # ВАЖНО: Логируем количество отзывов для отладки
+                    logger.info(f"Card '{name}': reviews_data keys = {list(reviews_data.keys()) if reviews_data else 'N/A'}")
+                    logger.info(f"Card '{name}': detailed_reviews_list length = {len(detailed_reviews_list) if detailed_reviews_list else 0}")
+                    if detailed_reviews_list and len(detailed_reviews_list) > 0:
+                        logger.info(f"Card '{name}': First review sample keys = {list(detailed_reviews_list[0].keys()) if isinstance(detailed_reviews_list[0], dict) else 'N/A'}")
+                    else:
+                        logger.warning(f"Card '{name}': detailed_reviews_list is empty! reviews_data.get('details') = {reviews_data.get('details', 'N/A') if reviews_data else 'N/A'}")
                     # Нормализуем card_url для поиска в словаре (убираем query параметры и фрагменты)
                     normalized_card_url = card_url.split('?')[0].split('#')[0].rstrip('/')
                     snippet_data = card_url_to_snippet_data.get(normalized_card_url, {})
@@ -3247,10 +3581,11 @@ class GisParser(BaseParser):
                         rating = str(snippet_rating)
                         logger.info(f"Using snippet rating for aggregation: {rating_value} (card: {name})")
                     
-                    # Для положительных и отрицательных отзывов используем данные из структуры страницы (приоритет), затем из snippet
+                    # Для положительных, отрицательных и нейтральных отзывов используем данные из структуры страницы (приоритет), затем из snippet
                     # Извлекаем из reviews_data списки отзывов по блокам
                     positive_reviews_list = reviews_data.get('positive_reviews_list', [])
                     negative_reviews_list = reviews_data.get('negative_reviews_list', [])
+                    neutral_reviews_list = reviews_data.get('neutral_reviews_list', [])
                     answered_reviews_list = reviews_data.get('answered_reviews_list', [])
                     
                     # Используем количество из структуры страницы, если есть
@@ -3269,12 +3604,27 @@ class GisParser(BaseParser):
                         # Используем количество из распарсенных негативных отзывов
                         reviews_data['negative_reviews'] = len(negative_reviews_list)
                         logger.info(f"Using parsed negative reviews count: {len(negative_reviews_list)} (card: {name})")
+                    
+                    # Нейтральные отзывы (3⭐) - используем количество из распарсенных отзывов
+                    if len(neutral_reviews_list) > 0:
+                        reviews_data['neutral_reviews'] = len(neutral_reviews_list)
+                        logger.info(f"Using parsed neutral reviews count: {len(neutral_reviews_list)} (card: {name})")
+                    else:
+                        reviews_data['neutral_reviews'] = 0
+                    
+                    # Нейтральные отзывы (3⭐) - используем количество из распарсенных отзывов
+                    if len(neutral_reviews_list) > 0:
+                        reviews_data['neutral_reviews'] = len(neutral_reviews_list)
+                        logger.info(f"Using parsed neutral reviews count: {len(neutral_reviews_list)} (card: {name})")
+                    else:
+                        reviews_data['neutral_reviews'] = 0
 
                     card_data: Dict[str, Any] = {
                         'card_name': name,
                         'card_address': address,
                         'card_rating': rating,
                         'card_reviews_count': actual_reviews_count,  # Используем данные из структуры страницы для агрегированной информации
+                        'card_ratings_count': reviews_data.get('ratings_count', 0),  # Количество оценок из структуры страницы
                         'card_website': website,
                         'card_phone': phone,
                         'card_rubrics': "",
@@ -3282,6 +3632,7 @@ class GisParser(BaseParser):
                         'card_avg_response_time': reviews_data.get('avg_response_time_days', 0.0),  # Среднее время ответа для блока "С ответом"
                         'card_reviews_positive': reviews_data.get('positive_reviews', 0),
                         'card_reviews_negative': reviews_data.get('negative_reviews', 0),
+                        'card_reviews_neutral': reviews_data.get('neutral_reviews', 0),  # Нейтральные отзывы (3⭐)
                         'card_reviews_texts': "; ".join(reviews_data.get('texts', [])),
                         'card_answered_reviews_count': reviews_data.get('answered_count', 0),  # Используем значение из структуры страницы (если найдено)
                         'card_unanswered_reviews_count': max(0, actual_reviews_count - reviews_data.get('answered_count', 0)),  # Вычисляем на основе структуры страницы
@@ -3342,25 +3693,58 @@ class GisParser(BaseParser):
 
             # Общее количество отзывов и разбивка по тональности — сумма по карточкам.
             total_reviews = 0
+            total_ratings = 0  # Общее количество оценок
             total_positive = 0
             total_negative = 0
+            total_neutral = 0  # Нейтральные отзывы (3⭐)
             total_answered = 0
             total_unanswered = 0
 
             ratings: List[float] = []
 
             for card in card_data_list:
-                # Всего отзывов по карточке
-                reviews_cnt = card.get('card_reviews_count', 0) or 0
+                # Получаем детальные отзывы для точного подсчета
+                detailed_reviews = card.get('detailed_reviews', [])
+                if isinstance(detailed_reviews, str):
+                    try:
+                        detailed_reviews = json.loads(detailed_reviews)
+                    except:
+                        detailed_reviews = []
+                if not isinstance(detailed_reviews, list):
+                    detailed_reviews = []
+                
+                # Всего отзывов по карточке - используем фактическое количество из detailed_reviews
+                reviews_cnt = len(detailed_reviews) if detailed_reviews else (card.get('card_reviews_count', 0) or 0)
                 total_reviews += reviews_cnt
 
-                # Тональность по карточке
-                total_positive += card.get('card_reviews_positive', 0) or 0
-                total_negative += card.get('card_reviews_negative', 0) or 0
+                # Всего оценок по карточке
+                ratings_cnt = card.get('card_ratings_count', 0) or 0
+                total_ratings += ratings_cnt
 
-                # Ответы / без ответа по карточке
-                total_answered += card.get('card_answered_reviews_count', 0) or 0
-                total_unanswered += card.get('card_unanswered_reviews_count', 0) or 0
+                # Тональность по карточке - пересчитываем из detailed_reviews для точности
+                if detailed_reviews:
+                    card_positive = sum(1 for r in detailed_reviews if isinstance(r, dict) and r.get('review_rating', 0) >= 4)
+                    card_negative = sum(1 for r in detailed_reviews if isinstance(r, dict) and r.get('review_rating', 0) in (1, 2))
+                    card_neutral = sum(1 for r in detailed_reviews if isinstance(r, dict) and r.get('review_rating', 0) == 3)
+                    total_positive += card_positive
+                    total_negative += card_negative
+                    total_neutral += card_neutral
+                else:
+                    # Fallback: используем значения из карточки, если detailed_reviews нет
+                    total_positive += card.get('card_reviews_positive', 0) or 0
+                    total_negative += card.get('card_reviews_negative', 0) or 0
+                    total_neutral += card.get('card_reviews_neutral', 0) or 0
+
+                # Ответы / без ответа по карточке - пересчитываем из detailed_reviews для точности
+                if detailed_reviews:
+                    card_answered = sum(1 for r in detailed_reviews if isinstance(r, dict) and r.get('has_response', False))
+                    card_unanswered = reviews_cnt - card_answered
+                    total_answered += card_answered
+                    total_unanswered += card_unanswered
+                else:
+                    # Fallback: используем значения из карточки
+                    total_answered += card.get('card_answered_reviews_count', 0) or 0
+                    total_unanswered += card.get('card_unanswered_reviews_count', 0) or 0
 
                 # Рейтинг карточки (если его отдал 2ГИС)
                 rating_str = str(card.get('card_rating', '')).replace(',', '.').strip()
@@ -3373,10 +3757,23 @@ class GisParser(BaseParser):
                     continue
 
             aggregated_info['aggregated_reviews_count'] = total_reviews
+            aggregated_info['aggregated_ratings_count'] = total_ratings  # Общее количество оценок
             aggregated_info['aggregated_positive_reviews'] = total_positive
             aggregated_info['aggregated_negative_reviews'] = total_negative
+            aggregated_info['aggregated_neutral_reviews'] = total_neutral  # Нейтральные отзывы (3⭐)
             aggregated_info['aggregated_answered_reviews_count'] = total_answered
             aggregated_info['aggregated_unanswered_reviews_count'] = total_unanswered
+
+            # Сохраняем общий рейтинг карточки из структуры страницы (если есть только одна карточка)
+            if len(card_data_list) == 1:
+                single_card_rating = card_data_list[0].get('card_rating', '')
+                if single_card_rating:
+                    try:
+                        rating_val = float(str(single_card_rating).replace(',', '.'))
+                        if 1.0 <= rating_val <= 5.0:
+                            aggregated_info['aggregated_card_rating_from_page'] = rating_val
+                    except (ValueError, TypeError):
+                        pass
 
             # 1) Основной вариант: средний рейтинг по всем карточкам, если 2ГИС отдал рейтинг карточек.
             if ratings:
@@ -3415,7 +3812,6 @@ class GisParser(BaseParser):
                     reviews_data = card.get('detailed_reviews', [])
                     if isinstance(reviews_data, str):
                         try:
-                            import json
                             reviews_data = json.loads(reviews_data)
                         except:
                             reviews_data = []
@@ -3426,7 +3822,7 @@ class GisParser(BaseParser):
                     reviews_with_response = [r for r in reviews_data if isinstance(r, dict) and r.get('has_response') and r.get('review_date') and r.get('response_date')]
                     for review in reviews_with_response[:100]:  # Ограничиваем до 100 отзывов на карточку
                         try:
-                            from datetime import datetime
+                            # datetime уже импортирован глобально, не нужно импортировать локально
                             from src.parsers.date_parser import parse_russian_date
                             review_date = parse_russian_date(review['review_date'])
                             response_date = parse_russian_date(review['response_date'])
@@ -3450,6 +3846,40 @@ class GisParser(BaseParser):
                     2,
                 )
 
+            # Сохраняем данные о датах ответов в файл для последующего расчета
+            if hasattr(self, '_response_dates_data') and self._response_dates_data:
+                try:
+                    with open(self._response_dates_file, 'w', encoding='utf-8') as f:
+                        json.dump(self._response_dates_data, f, ensure_ascii=False, indent=2)
+                    logger.info(f"Saved {len(self._response_dates_data)} response dates to {self._response_dates_file}")
+                    
+                    # Пересчитываем среднее время ответа из всех сохраненных данных
+                    total_delta = timedelta(0)
+                    count = 0
+                    for item in self._response_dates_data:
+                        try:
+                            review_dt = dt_module.datetime.fromisoformat(item['review_date']) if isinstance(item.get('review_date'), str) and 'T' in item['review_date'] else parse_russian_date(item['review_date'])
+                            response_dt = dt_module.datetime.fromisoformat(item['response_date']) if isinstance(item.get('response_date'), str) and 'T' in item['response_date'] else parse_russian_date(item['response_date'])
+                            if review_dt and response_dt:
+                                delta = response_dt - review_dt
+                                if delta >= timedelta(0):
+                                    total_delta += delta
+                                    count += 1
+                        except Exception as e:
+                            logger.debug(f"Error parsing dates from saved data: {e}")
+                            continue
+                    
+                    if count > 0:
+                        avg_time = total_delta / count
+                        avg_days = avg_time.total_seconds() / 86400.0
+                        logger.info(f"Recalculated average response time from saved data: {avg_days:.2f} days (from {count} reviews)")
+                        # Обновляем агрегированные данные, если новый расчет более точный
+                        if count > aggregated_info.get('aggregated_answered_reviews_count', 0) * 0.8:  # Если использовано более 80% данных
+                            aggregated_info['aggregated_avg_response_time'] = round(avg_days, 2)
+                            logger.info(f"Updated aggregated_avg_response_time to {avg_days:.2f} days based on saved data")
+                except Exception as e:
+                    logger.warning(f"Error saving response dates data: {e}")
+            
             aggregation_time = time.time() - aggregation_start_time
             logger.info(f"Aggregation completed in {aggregation_time:.2f} seconds for {len(card_data_list)} cards")
             self._update_progress(f"Агрегация результатов: найдено {len(card_data_list)} карточек")

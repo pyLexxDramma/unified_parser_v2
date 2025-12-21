@@ -150,11 +150,34 @@ class PDFWriter:
 
         data = [
             ['Метрика', 'Значение'],
-            ['Карточек найдено', str(stats.get('total_cards_found', 0))],
-            ['Средний рейтинг', f"{stats.get('aggregated_rating', 0):.2f}" if stats.get('aggregated_rating') else "—"],
-            ['Всего отзывов', str(stats.get('aggregated_reviews_count', 0))],
-            ['Отвечено отзывов', str(stats.get('aggregated_answered_reviews_count', 0))],
+            ['Количество карточек', str(stats.get('total_cards_found', 0))],
         ]
+        
+        # Общий рейтинг карточки из структуры страницы (_1tam240)
+        card_rating_from_page = stats.get('aggregated_card_rating_from_page', 0.0)
+        if card_rating_from_page > 0:
+            # Формируем звездочки для рейтинга
+            stars = '★' * int(card_rating_from_page) + '☆' * (5 - int(card_rating_from_page))
+            data.append(['Общий рейтинг', f"{card_rating_from_page:.1f} {stars}"])
+        else:
+            # Fallback на средний рейтинг по отзывам с текстом
+            avg_rating = stats.get('aggregated_rating', 0)
+            if avg_rating > 0:
+                stars = '★' * int(avg_rating) + '☆' * (5 - int(avg_rating))
+                data.append(['Общий рейтинг по отзывам с текстом', f"{avg_rating:.2f} {stars}"])
+            else:
+                data.append(['Общий рейтинг', "—"])
+        
+        data.append(['Всего отзывов', str(stats.get('aggregated_reviews_count', 0))])
+        
+        # Всего оценок из структуры страницы (_1y88ofn или _jspzdm)
+        ratings_count = stats.get('aggregated_ratings_count', 0)
+        if ratings_count > 0:
+            data.append(['Всего оценок', str(ratings_count)])
+        
+        # Отвечено на (из структуры страницы)
+        answered_count = stats.get('aggregated_answered_reviews_count', 0)
+        data.append(['Отвечено на', str(answered_count)])
 
         total_reviews = stats.get('aggregated_reviews_count', 0)
         answered_reviews = stats.get('aggregated_answered_reviews_count', 0)
@@ -175,8 +198,14 @@ class PDFWriter:
             else:
                 data.append(['Среднее время ответа', "—"])
 
-        data.append(['Положительных отзывов (4-5⭐)', str(stats.get('aggregated_positive_reviews', 0))])
-        data.append(['Отрицательных отзывов (1-3⭐)', str(stats.get('aggregated_negative_reviews', 0))])
+        data.append(['Позитивных отзывов (4-5⭐)', str(stats.get('aggregated_positive_reviews', 0))])
+        data.append(['Нейтральных отзывов (3⭐)', str(stats.get('aggregated_neutral_reviews', 0))])
+        data.append(['Негативных отзывов (1-2⭐)', str(stats.get('aggregated_negative_reviews', 0))])
+        
+        # С оценкой (1-5⭐) - сумма всех отзывов с рейтингом
+        rated_reviews = stats.get('aggregated_rated_reviews_count', 0)
+        if rated_reviews > 0:
+            data.append(['С оценкой (1-5⭐)', str(rated_reviews)])
 
         table = Table(data, colWidths=[8*cm, 6*cm])
         table.setStyle(TableStyle([
