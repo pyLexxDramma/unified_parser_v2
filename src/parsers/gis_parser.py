@@ -239,13 +239,43 @@ class GisParser(BaseParser):
                         else:
                             stable_count += 1
                             if stable_count >= max_stable_iterations:
-                                logger.info(f"Scroll height and card count stable for {stable_count} iterations. Reached bottom.")
-                                break
+                                # Дополнительная проверка: делаем еще 2-3 прокрутки после стабилизации
+                                # на случай, если последние карточки загружаются с задержкой
+                                logger.info(f"Scroll height and card count stable for {stable_count} iterations. Doing final check...")
+                                for final_check in range(3):
+                                    time.sleep(self._scroll_wait_time * 1.5)
+                                    page_source, soup = self._get_page_source_and_soup()
+                                    final_card_count = 0
+                                    for selector in self._card_selectors:
+                                        found = soup.select(selector)
+                                        final_card_count = max(final_card_count, len(found))
+                                    if final_card_count > current_card_count:
+                                        logger.info(f"Found additional {final_card_count - current_card_count} cards during final check")
+                                        current_card_count = final_card_count
+                                        max_card_count = max(max_card_count, current_card_count)
+                                        stable_count = 0  # Сбрасываем счетчик, если нашли новые карточки
+                                        break
+                                    if scrollable_element_selector:
+                                        self.driver.execute_script(scroll_info_script)
+                                if stable_count >= max_stable_iterations:
+                                    logger.info(f"Confirmed: reached bottom after final check. Total cards: {max_card_count}")
+                                    break
                             
                         if scroll_info.get('isAtBottom') and not has_grown:
                             time.sleep(2)
                             scroll_info = self.driver.execute_script(scroll_info_script)
                             if scroll_info and scroll_info.get('newScrollHeight') == last_scroll_height:
+                                # Дополнительная проверка карточек после достижения низа
+                                time.sleep(1)
+                                page_source, soup = self._get_page_source_and_soup()
+                                final_check_count = 0
+                                for selector in self._card_selectors:
+                                    found = soup.select(selector)
+                                    final_check_count = max(final_check_count, len(found))
+                                if final_check_count > current_card_count:
+                                    logger.info(f"Found additional {final_check_count - current_card_count} cards at bottom")
+                                    current_card_count = final_check_count
+                                    max_card_count = max(max_card_count, current_card_count)
                                 logger.info("Confirmed at bottom of scrollable container")
                                 break
                 else:
@@ -277,13 +307,42 @@ class GisParser(BaseParser):
                         else:
                             stable_count += 1
                             if stable_count >= max_stable_iterations:
-                                logger.info(f"Scroll height and card count stable for {stable_count} iterations. Reached bottom.")
-                                break
+                                # Дополнительная проверка: делаем еще 2-3 прокрутки после стабилизации
+                                # на случай, если последние карточки загружаются с задержкой
+                                logger.info(f"Scroll height and card count stable for {stable_count} iterations. Doing final check...")
+                                for final_check in range(3):
+                                    time.sleep(self._scroll_wait_time * 1.5)
+                                    page_source, soup = self._get_page_source_and_soup()
+                                    final_card_count = 0
+                                    for selector in self._card_selectors:
+                                        found = soup.select(selector)
+                                        final_card_count = max(final_card_count, len(found))
+                                    if final_card_count > current_card_count:
+                                        logger.info(f"Found additional {final_card_count - current_card_count} cards during final check")
+                                        current_card_count = final_card_count
+                                        max_card_count = max(max_card_count, current_card_count)
+                                        stable_count = 0  # Сбрасываем счетчик, если нашли новые карточки
+                                        break
+                                    self.driver.execute_script(scroll_info_script)
+                                if stable_count >= max_stable_iterations:
+                                    logger.info(f"Confirmed: reached bottom after final check. Total cards: {max_card_count}")
+                                    break
                         
                         if scroll_info.get('isAtBottom') and not has_grown:
                             time.sleep(2)
                             scroll_info = self.driver.execute_script(scroll_info_script)
                             if scroll_info and scroll_info.get('newScrollHeight') == last_scroll_height:
+                                # Дополнительная проверка карточек после достижения низа
+                                time.sleep(1)
+                                page_source, soup = self._get_page_source_and_soup()
+                                final_check_count = 0
+                                for selector in self._card_selectors:
+                                    found = soup.select(selector)
+                                    final_check_count = max(final_check_count, len(found))
+                                if final_check_count > current_card_count:
+                                    logger.info(f"Found additional {final_check_count - current_card_count} cards at bottom")
+                                    current_card_count = final_check_count
+                                    max_card_count = max(max_card_count, current_card_count)
                                 logger.info("Confirmed at bottom of page")
                                 break
                 
@@ -1952,16 +2011,22 @@ class GisParser(BaseParser):
                                     
                                     # Проверяем, что ответ не пришел раньше отзыва (проверка на логику)
                                     if time_difference >= timedelta(0):
-                                        # Накапливаем данные в глобальных переменных (Шаг 1)
-                                        total_response_time += time_difference
-                                        count_with_replies += 1
+                                        # Используем total_seconds() для более точного расчета дней (включая часы и минуты)
+                                        # Это важно для больших периодов времени
+                                        delta_days_precise = time_difference.total_seconds() / 86400.0
+                                        delta_days = time_difference.days  # Для обратной совместимости
                                         
-                                        # Также сохраняем в старых переменных для совместимости (в днях)
-                                        delta_days = time_difference.days
-                                        response_time_sum_days += float(delta_days)
-                                        response_time_count += 1
-                                        
-                                        logger.debug(f"Added response time: {time_difference} ({delta_days} days) (review: {review_date}, response: {response_date})")
+                                        # Фильтруем выбросы: разумные пределы для времени ответа (от 0 до 2 лет)
+                                        if delta_days_precise <= 730:  # Максимум 2 года (730 дней)
+                                            # Накапливаем данные в глобальных переменных (Шаг 1)
+                                            total_response_time += time_difference
+                                            count_with_replies += 1
+                                            response_time_sum_days += float(delta_days_precise)  # Используем точное значение
+                                            response_time_count += 1
+                                            
+                                            logger.debug(f"Added response time: {time_difference} ({delta_days_precise:.2f} days, {delta_days} days integer) (review: {review_date}, response: {response_date})")
+                                        else:
+                                            logger.warning(f"Skipped unrealistic response time: {delta_days_precise:.2f} days (review: {review_date}, response: {response_date}) - exceeds 2 years limit")
                                 except Exception as e:
                                     logger.debug(f"Error calculating response time: {e}")
                                     pass
@@ -2069,15 +2134,20 @@ class GisParser(BaseParser):
                                 continue
                     
                     if review_date_parsed and response_date_parsed:
-                        delta = (response_date_parsed - review_date_parsed).days
-                        if delta >= 0 and delta < 3650:  # Разумные пределы: не более 10 лет
-                            answered_response_time_sum += float(delta)
-                            answered_response_time_count += 1
-                            logger.info(f"Added response time for answered review: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
-                        elif delta < 0:
-                            logger.warning(f"Negative response time delta: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
-                        elif delta >= 3650:
-                            logger.warning(f"Unrealistic response time delta: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
+                        time_diff = response_date_parsed - review_date_parsed
+                        if time_diff >= timedelta(0):
+                            # Используем total_seconds() для более точного расчета (включая часы и минуты)
+                            delta_precise = time_diff.total_seconds() / 86400.0
+                            delta_days = time_diff.days  # Для логирования
+                            # Фильтруем выбросы: разумные пределы для времени ответа (от 0 до 2 лет)
+                            if delta_precise <= 730:  # Максимум 2 года (730 дней)
+                                answered_response_time_sum += float(delta_precise)
+                                answered_response_time_count += 1
+                                logger.info(f"Added response time for answered review: {delta_precise:.2f} days ({delta_days} days integer) (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
+                            else:
+                                logger.warning(f"Skipped unrealistic response time: {delta_precise:.2f} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')}) - exceeds 2 years limit")
+                        else:
+                            logger.warning(f"Negative response time delta: {time_diff} (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
             
             # Шаг 4: Финальный расчет среднего времени ответа (после завершения цикла парсинга)
             # Используем данные, накопленные в цикле (total_response_time и count_with_replies)
@@ -3896,9 +3966,15 @@ class GisParser(BaseParser):
                             review_date = parse_russian_date(review['review_date'])
                             response_date = parse_russian_date(review['response_date'])
                             if review_date and response_date:
-                                delta = (response_date - review_date).days
-                                if delta >= 0:
-                                    response_times.append(delta)
+                                time_diff = response_date - review_date
+                                if time_diff >= timedelta(0):
+                                    # Используем total_seconds() для более точного расчета
+                                    delta_precise = time_diff.total_seconds() / 86400.0
+                                    # Фильтруем выбросы: разумные пределы для времени ответа (от 0 до 2 лет)
+                                    if delta_precise <= 730:  # Максимум 2 года (730 дней)
+                                        response_times.append(delta_precise)
+                                    else:
+                                        logger.debug(f"Skipped unrealistic response time in aggregation: {delta_precise:.2f} days")
                         except Exception:
                             pass
                 logger.info(f"Processed {total_reviews_processed} reviews, found {len(response_times)} response time entries")
