@@ -1198,6 +1198,7 @@ class YandexParser(BaseParser):
                     review_key = f"{author_name}_{date_text}_{rating_value}_{hashlib.md5(review_text[:50].encode()).hexdigest()[:10]}"
                     if review_key in seen_review_keys:
                         continue
+                        continue
                     seen_review_keys.add(review_key)
                     
                     # Проверяем, является ли это ответом компании (а не отзывом пользователя)
@@ -1241,6 +1242,16 @@ class YandexParser(BaseParser):
                             'response_date_datetime': response_date,  # Сохраняем datetime объект для расчета времени ответа
                         })
                         
+                        # Обновляем прогресс каждые 5 отзывов
+                        if len(all_reviews) % 5 == 0:
+                            total_expected = reviews_count_total if reviews_count_total > 0 else 0
+                            if total_expected > 0:
+                                self._update_progress(f"Парсинг отзывов Yandex: обработано {len(all_reviews)} из {total_expected}")
+                                logger.info(f"Yandex reviews: processed {len(all_reviews)}/{total_expected} reviews")
+                            else:
+                                self._update_progress(f"Парсинг отзывов Yandex: обработано {len(all_reviews)} отзывов")
+                                logger.info(f"Yandex reviews: processed {len(all_reviews)} reviews")
+                        
                         # Классификация: учитываем и звёзды, и смысл текста.
                         # Базовое правило: 1–2★ — негатив, 3★ — нейтрально, 4–5★ — позитив.
                         # Если звёзды явно противоречат тексту (по эвристике _estimate_sentiment),
@@ -1270,6 +1281,11 @@ class YandexParser(BaseParser):
         # Сохраняем все отзывы без ограничения (было [:500])
         reviews_info['details'] = all_reviews
         reviews_info['reviews_count'] = len(all_reviews) if all_reviews else reviews_count_total
+        
+        # Финальный лог о результатах парсинга отзывов
+        logger.info(f"Yandex reviews parsing completed: found {len(all_reviews)} reviews (expected: {reviews_count_total if reviews_count_total > 0 else 'unknown'})")
+        logger.info(f"Yandex reviews breakdown: positive={reviews_info['positive_reviews']}, negative={reviews_info['negative_reviews']}, neutral={reviews_info['neutral_reviews']}, answered={reviews_info.get('answered_count', 0)}")
+        
         return reviews_info
 
     def _normalize_address(self, address: str) -> str:

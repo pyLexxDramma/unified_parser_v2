@@ -104,6 +104,8 @@ class GisParser(BaseParser):
         max_stable_iterations = 5
         scroll_iterations = 0
         max_card_count = 0
+        no_cards_iterations = 0  # Счетчик итераций без карточек
+        max_no_cards_iterations = 3  # Максимум итераций без карточек перед прерыванием
         
         if max_scrolls is None:
             max_scrolls = self._scroll_max_iter
@@ -111,6 +113,38 @@ class GisParser(BaseParser):
             scroll_step = self._scroll_step
         
         logger.info(f"Scroll parameters: Max iterations={max_scrolls}, Wait time={self._scroll_wait_time}s")
+        
+        # Сначала проверяем, есть ли карточки на странице вообще
+        try:
+            page_source, soup = self._get_page_source_and_soup()
+            initial_card_count = 0
+            for selector in self._card_selectors:
+                found = soup.select(selector)
+                initial_card_count = max(initial_card_count, len(found))
+            
+            if initial_card_count == 0:
+                # Проверяем наличие сообщения "ничего не найдено" или похожих индикаторов
+                no_results_indicators = [
+                    'ничего не найдено',
+                    'не найдено',
+                    'no results',
+                    'ничего не найдено',
+                    'результатов не найдено'
+                ]
+                page_text = soup.get_text().lower()
+                has_no_results_message = any(indicator in page_text for indicator in no_results_indicators)
+                
+                if has_no_results_message:
+                    logger.info("No cards found on page and 'no results' message detected. Skipping scroll.")
+                    return 0
+                
+                # Если карточек нет, но нет явного сообщения, делаем 1-2 прокрутки для проверки
+                logger.info(f"No cards found initially on page. Will do quick check (max {max_no_cards_iterations} iterations).")
+            else:
+                logger.info(f"Found {initial_card_count} cards initially. Starting scroll to load all cards.")
+                max_card_count = initial_card_count
+        except Exception as e:
+            logger.warning(f"Error checking initial card count: {e}. Proceeding with scroll.")
         
         scrollable_element_selector = None
         try:
@@ -155,6 +189,15 @@ class GisParser(BaseParser):
                 for selector in self._card_selectors:
                     found = soup.select(selector)
                     current_card_count = max(current_card_count, len(found))
+                
+                # Если карточек нет, увеличиваем счетчик
+                if current_card_count == 0:
+                    no_cards_iterations += 1
+                    if no_cards_iterations >= max_no_cards_iterations and scroll_iterations >= max_no_cards_iterations:
+                        logger.info(f"No cards found after {no_cards_iterations} iterations. Stopping scroll early.")
+                        break
+                else:
+                    no_cards_iterations = 0  # Сбрасываем счетчик, если карточки найдены
                 
                 if scrollable_element_selector:
                     escaped_selector = json.dumps(scrollable_element_selector)
@@ -2197,6 +2240,25 @@ class GisParser(BaseParser):
             # Если знаем ожидаемое количество отзывов, используем его как ориентир
             target_reviews = expected_count if expected_count > 0 else None
             
+            # Проверяем наличие отзывов перед началом прокрутки
+            page_source, soup = self._get_page_source_and_soup()
+            initial_review_count = 0
+            for selector in review_selectors:
+                found = soup.select(selector)
+                valid_reviews = [
+                    elem for elem in found 
+                    if elem.get_text(strip=True) and len(elem.get_text(strip=True)) >= 3
+                    and 'читать целиком' not in elem.get_text(strip=True).lower()
+                ]
+                initial_review_count = max(initial_review_count, len(valid_reviews))
+            
+            # Если отзывов нет изначально и нет целевого количества, делаем быструю проверку
+            if initial_review_count == 0 and not target_reviews:
+                logger.info("No reviews found initially. Will do quick check (max 5 iterations) before stopping.")
+                max_quick_check_iterations = 5
+            else:
+                max_quick_check_iterations = None
+            
             while scroll_iterations < max_scrolls:
                 # Проверяем таймаут
                 elapsed_time = time_module.time() - start_time
@@ -2231,6 +2293,13 @@ class GisParser(BaseParser):
                     f"no_change: {no_change_count}/{required_no_change}, "
                     f"elapsed: {elapsed_time:.1f}s)"
                 )
+                
+                # Раннее прерывание: если отзывов нет и мы уже сделали несколько итераций
+                if current_review_count == 0 and not target_reviews:
+                    # Если после 5 итераций отзывов все еще нет, прерываем прокрутку
+                    if scroll_iterations >= 5:
+                        logger.info(f"No reviews found after {scroll_iterations + 1} iterations. Stopping scroll early.")
+                        break
                 
                 # Проверяем, увеличилось ли количество отзывов
                 if current_review_count > last_review_count:

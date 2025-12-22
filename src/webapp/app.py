@@ -182,6 +182,32 @@ async def debug_password(request: Request):
     }
     return JSONResponse(password_info)
 
+@app.get("/api/cities")
+async def get_cities(request: Request, query: Optional[str] = None):
+    """API endpoint для получения списка городов с автодополнением"""
+    if not check_auth(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    try:
+        from src.webapp.russian_cities_200 import RUSSIAN_CITIES_200
+        cities = RUSSIAN_CITIES_200
+        
+        # Если есть поисковый запрос, фильтруем города (работает с первой буквы)
+        if query:
+            query_lower = query.lower().strip()
+            if query_lower:
+                # Фильтруем города, которые начинаются с введенного текста
+                cities = [city for city in cities if city.lower().startswith(query_lower)]
+                # Ограничиваем результаты до 20 для быстрого отображения
+                cities = cities[:20]
+            else:
+                cities = []
+        
+        return JSONResponse({"cities": cities})
+    except Exception as e:
+        logger.error(f"Error getting cities list: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 @app.get("/")
 async def read_root(request: Request):
     url_prefix = get_url_prefix(request)
@@ -253,6 +279,26 @@ def _generate_gis_url(company_name: str, company_site: str, search_scope: str, l
 
 CITY_NAME_RE = re.compile(r"^[А-Яа-яЁё\s\-]+$")
 CITY_PLACEHOLDER = "Значение отсутствует"
+
+# Импортируем список из 200 крупнейших городов России (население от 100 000+)
+try:
+    from src.webapp.russian_cities_200 import RUSSIAN_CITIES_200
+    DEFAULT_RUSSIAN_CITIES = RUSSIAN_CITIES_200
+except ImportError:
+    # Fallback на базовый список, если файл не найден
+    DEFAULT_RUSSIAN_CITIES = [
+        "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань",
+        "Нижний Новгород", "Челябинск", "Самара", "Омск", "Ростов-на-Дону",
+        "Уфа", "Красноярск", "Воронеж", "Пермь", "Волгоград",
+        "Краснодар", "Саратов", "Тюмень", "Тольятти", "Ижевск",
+        "Барнаул", "Ульяновск", "Иркутск", "Хабаровск", "Ярославль",
+        "Владивосток", "Махачкала", "Томск", "Оренбург", "Кемерово",
+        "Новокузнецк", "Рязань", "Астрахань", "Набережные Челны", "Пенза",
+        "Липецк", "Киров", "Чебоксары", "Калининград", "Тула",
+        "Курск", "Сочи", "Ставрополь", "Улан-Удэ", "Магнитогорск",
+        "Архангельск", "Белгород", "Курган", "Владикавказ", "Мурманск",
+        "Симферополь",
+    ]
 
 
 def _parse_cities(cities_str: str) -> List[str]:
@@ -579,10 +625,17 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
     def run_parsing():
         logger.info(f"Starting parsing thread for task {task_id}")
         try:
-            # Разбираем список городов, если включён режим "по стране" и переданы города
+            # Разбираем список городов, если включён режим "по стране"
             cities_list: List[str] = []
-            if form_data.search_scope == 'country' and getattr(form_data, "cities", ""):
-                cities_list = _parse_cities(form_data.cities)
+            if form_data.search_scope == 'country':
+                if getattr(form_data, "cities", ""):
+                    # Если города указаны пользователем, используем их
+                    cities_list = _parse_cities(form_data.cities)
+                else:
+                    # Если города не указаны, используем список крупных городов России
+                    # для полного покрытия всех филиалов по стране
+                    cities_list = DEFAULT_RUSSIAN_CITIES.copy()
+                    logger.info(f"Task {task_id}: No cities specified for country search, using default list of {len(cities_list)} major Russian cities")
 
             if form_data.source == 'both':
                 update_task_status(task_id, "RUNNING", "Запуск парсинга обоих источников...")
@@ -1709,8 +1762,13 @@ async def api_restart_task(request: Request, task_id: str):
         try:
             # Разбираем список городов для country-режима
             cities_list: List[str] = []
-            if cloned_form.search_scope == 'country' and getattr(cloned_form, "cities", ""):
-                cities_list = _parse_cities(cloned_form.cities)
+            if cloned_form.search_scope == 'country':
+                if getattr(cloned_form, "cities", ""):
+                    cities_list = _parse_cities(cloned_form.cities)
+                else:
+                    # Если города не указаны, используем список крупных городов России
+                    cities_list = DEFAULT_RUSSIAN_CITIES.copy()
+                    logger.info(f"Task {new_task_id}: No cities specified for country search restart, using default list of {len(cities_list)} major Russian cities")
 
             # Чтобы не тащить весь сложный код сюда, просто дергаем /start_parsing
             # через внутренний вызов, но это потребовало бы Request. Поэтому для

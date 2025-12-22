@@ -4,6 +4,11 @@
     "port": 8000,
     "password": "admin123"
   },
+  "log": {
+    "level": "INFO",
+    "cli_format": "%(asctime)s.%(msecs)03d | %(levelname)-8s | %(message)s",
+    "cli_datefmt": "%d/%m/%Y %H:%M:%S"
+  },
   "parser": {
     "max_records": 1000,
     "scroll_wait_time": 1.0,

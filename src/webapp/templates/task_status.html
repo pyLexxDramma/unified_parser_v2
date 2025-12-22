@@ -65,28 +65,23 @@
             {% endif %}
         </div>
         
-        {# 
-        Кнопки управления парсингом (пауза/стоп/возобновление/перезапуск) отключены:
-        оставляем только прогресс-бар и информацию о времени выполнения.
-        Если нужно вернуть управление задачами с UI — раскомментировать блок ниже.
-
-        <!-- Кнопки управления (только для активных задач) -->
+        <!-- Кнопки управления парсингом -->
         {% if task.status == 'RUNNING' or task.status == 'PENDING' %}
-        <div class="control-buttons" style="margin-top: 15px; display: flex; gap: 10px;">
-            <button id="btn-pause" class="btn-control btn-pause" onclick="pauseTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #ff9800; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">⏸ Приостановить</button>
-            <button id="btn-stop" class="btn-control btn-stop" onclick="stopTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">⏹ Остановить</button>
+        <div class="control-buttons" style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
+            <button id="btn-stop" class="btn-control btn-stop" onclick="stopTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">⏹ Остановить парсинг</button>
+            <button id="btn-restart" class="btn-control btn-restart" onclick="restartParsing('{{ task.task_id }}')" style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">🔄 Перезапустить</button>
         </div>
         {% elif task.status == 'PAUSED' %}
         <div class="control-buttons" style="margin-top: 15px; display: flex; flex-wrap: wrap; gap: 10px;">
-            <button id="btn-resume" class="btn-control btn-resume" onclick="resumeTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">▶ Возобновить</button>
-            <button id="btn-stop" class="btn-control btn-stop" onclick="stopTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">⏹ Остановить</button>
-            {% if task.detailed_results and task.detailed_results|length > 0 %}
-            <button id="btn-show-results" class="btn-control btn-show-results" onclick="showResults()" style="padding: 10px 20px; background: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">📊 Показать результаты ({{ task.detailed_results|length }})</button>
-            {% endif %}
-            <button id="btn-restart" class="btn-control btn-restart" onclick="restartParsing('{{ task.task_id }}')" style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600;">🔄 Перезапустить парсинг</button>
+            <button id="btn-resume" class="btn-control btn-resume" onclick="resumeTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">▶ Возобновить</button>
+            <button id="btn-stop" class="btn-control btn-stop" onclick="stopTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">⏹ Остановить</button>
+            <button id="btn-restart" class="btn-control btn-restart" onclick="restartParsing('{{ task.task_id }}')" style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">🔄 Перезапустить</button>
+        </div>
+        {% elif task.status == 'COMPLETED' or task.status == 'FAILED' %}
+        <div class="control-buttons" style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
+            <button id="btn-restart" class="btn-control btn-restart" onclick="restartParsing('{{ task.task_id }}')" style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">🔄 Перезапустить парсинг</button>
         </div>
         {% endif %}
-        #}
     </header>
 
     <section class="task-meta">
@@ -1033,6 +1028,134 @@
     {% endif %}
         </script>
         <script src="{{ (url_prefix or '') }}/static/task_status.js"></script>
+        
+        <script>
+        // Функции управления задачами
+        const basePath = window.ROOT_PATH || '';
+        
+        function stopTask(taskId) {
+            if (!confirm('Вы уверены, что хотите остановить парсинг? Текущий прогресс будет сохранен.')) {
+                return;
+            }
+            
+            const btn = document.getElementById('btn-stop');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '⏳ Останавливается...';
+            }
+            
+            fetch(basePath + `/api/tasks/${taskId}/stop`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Парсинг остановлен. Страница будет обновлена через несколько секунд.');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 2000);
+                } else {
+                    alert('Ошибка: ' + (data.error || 'Не удалось остановить парсинг'));
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = '⏹ Остановить парсинг';
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error stopping task:', error);
+                alert('Ошибка при остановке парсинга: ' + error.message);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '⏹ Остановить парсинг';
+                }
+            });
+        }
+        
+        function restartParsing(taskId) {
+            if (!confirm('Вы уверены, что хотите перезапустить парсинг? Будет создана новая задача с теми же параметрами.')) {
+                return;
+            }
+            
+            const btn = document.getElementById('btn-restart');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '⏳ Перезапускается...';
+            }
+            
+            fetch(basePath + `/api/tasks/${taskId}/restart`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.new_task_id) {
+                    alert('Парсинг перезапущен. Вы будете перенаправлены на страницу новой задачи.');
+                    window.location.href = basePath + `/tasks/${data.new_task_id}`;
+                } else {
+                    alert('Ошибка: ' + (data.error || 'Не удалось перезапустить парсинг'));
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = '🔄 Перезапустить';
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error restarting task:', error);
+                alert('Ошибка при перезапуске парсинга: ' + error.message);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '🔄 Перезапустить';
+                }
+            });
+        }
+        
+        function resumeTask(taskId) {
+            const btn = document.getElementById('btn-resume');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '⏳ Возобновляется...';
+            }
+            
+            fetch(basePath + `/api/tasks/${taskId}/resume`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Парсинг возобновлен. Страница будет обновлена.');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                } else {
+                    alert('Ошибка: ' + (data.error || 'Не удалось возобновить парсинг'));
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = '▶ Возобновить';
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error resuming task:', error);
+                alert('Ошибка при возобновлении парсинга: ' + error.message);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '▶ Возобновить';
+                }
+            });
+        }
+        </script>
     
     {# Кнопки скачивания внизу страницы #}
     {% if task.status == 'COMPLETED' %}
