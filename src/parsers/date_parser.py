@@ -52,24 +52,42 @@ def parse_russian_date(date_string: str, current_year: Optional[int] = None) -> 
             try:
                 day = int(match.group(1))
                 month_name = match.group(2).lower()
-                year = int(match.group(3)) if len(match.groups()) >= 3 and match.group(3).isdigit() else current_year
+                has_year_in_string = len(match.groups()) >= 3 and match.group(3).isdigit()
+                year = int(match.group(3)) if has_year_in_string else current_year
                 
-                # Исправляем даты в будущем (если год больше текущего на 1, вероятно ошибка)
-                if year > datetime.now().year:
-                    if year == datetime.now().year + 1:
-                        year = datetime.now().year
-                    elif year > datetime.now().year + 10:
+                month = MONTHS_RU.get(month_name)
+                if not month:
+                    continue
+                
+                # Если год не указан в строке, пытаемся определить правильный год
+                if not has_year_in_string:
+                    # Пробуем текущий год
+                    test_date = datetime(current_year, month, day)
+                    # Если дата в будущем (больше чем сегодня + 1 день запас), используем предыдущий год
+                    if test_date > datetime.now() + timedelta(days=1):
+                        year = current_year - 1
+                        logger.debug(f"Date '{date_string}' without year parsed as {year} (was in future with current year)")
+                    else:
+                        year = current_year
+                else:
+                    # Год указан в строке - проверяем на разумность
+                    if year > datetime.now().year + 1:
                         # Если год явно неправильный (например, 3035), используем текущий год
                         logger.warning(f"Invalid year {year} in date '{date_string}', using current year")
                         year = datetime.now().year
+                    elif year > datetime.now().year:
+                        # Если год на 1 больше текущего, вероятно ошибка парсинга
+                        logger.warning(f"Year {year} is in future in date '{date_string}', using current year")
+                        year = datetime.now().year
                 
-                month = MONTHS_RU.get(month_name)
+                # Финальная проверка: дата не должна быть в будущем (с запасом в 1 день)
                 if month and 1 <= day <= 31 and 2000 <= year <= datetime.now().year + 1:
                     parsed_date = datetime(year, month, day)
                     # Проверяем, что дата не в будущем (с запасом в 1 день)
                     if parsed_date > datetime.now() + timedelta(days=1):
                         # Если дата в будущем, используем предыдущий год
                         parsed_date = parsed_date.replace(year=year - 1)
+                        logger.debug(f"Adjusted future date '{date_string}' to {parsed_date.year}")
                     return parsed_date
                 elif month and 1 <= day <= 31:
                     # Если год вне разумных пределов, но месяц и день валидны, используем текущий год

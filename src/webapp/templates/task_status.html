@@ -30,9 +30,26 @@
         
         <!-- Общий прогресс с текстом статуса и ориентировочным временем -->
         <div class="progress-container" id="progress-container" style="margin-top: 15px; {% if task.status == 'RUNNING' or task.status == 'PENDING' %}display: block;{% else %}display: none;{% endif %}">
+            <!-- Анимация парсинга -->
+            <div id="parsing-animation" style="display: flex; align-items: center; justify-content: center; margin-bottom: 15px; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <div class="spinner" style="width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                    <div style="color: white; font-size: 1.1em; font-weight: 600;">Парсинг в процессе...</div>
+            </div>
+        </div>
             <div class="progress-status-text" id="progress-status-text" style="margin-bottom: 8px; font-size: 1em; color: #333; min-height: 1.5em; font-weight: 500;">{{ task.progress or 'Инициализация...' }}</div>
             <div class="progress-time-estimate" id="progress-time-estimate" style="font-size: 0.9em; color: #666; margin-top: 5px; min-height: 1.2em;">Оценка времени до завершения: рассчитывается...</div>
-        </div>
+            </div>
+            
+        <style>
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            .spinner {
+                animation: spin 1s linear infinite;
+            }
+        </style>
         
         <!-- Время парсинга -->
         <div class="time-info" style="margin-top: 15px; padding: 10px; background: #f5f5f5; border-radius: 5px; font-size: 0.9em;">
@@ -65,23 +82,7 @@
             {% endif %}
         </div>
         
-        <!-- Кнопки управления парсингом -->
-        {% if task.status == 'RUNNING' or task.status == 'PENDING' %}
-        <div class="control-buttons" style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-            <button id="btn-stop" class="btn-control btn-stop" onclick="stopTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">⏹ Остановить парсинг</button>
-            <button id="btn-restart" class="btn-control btn-restart" onclick="restartParsing('{{ task.task_id }}')" style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">🔄 Перезапустить</button>
-        </div>
-        {% elif task.status == 'PAUSED' %}
-        <div class="control-buttons" style="margin-top: 15px; display: flex; flex-wrap: wrap; gap: 10px;">
-            <button id="btn-resume" class="btn-control btn-resume" onclick="resumeTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">▶ Возобновить</button>
-            <button id="btn-stop" class="btn-control btn-stop" onclick="stopTask('{{ task.task_id }}')" style="padding: 10px 20px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">⏹ Остановить</button>
-            <button id="btn-restart" class="btn-control btn-restart" onclick="restartParsing('{{ task.task_id }}')" style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">🔄 Перезапустить</button>
-        </div>
-        {% elif task.status == 'COMPLETED' or task.status == 'FAILED' %}
-        <div class="control-buttons" style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-            <button id="btn-restart" class="btn-control btn-restart" onclick="restartParsing('{{ task.task_id }}')" style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; transition: background 0.3s;">🔄 Перезапустить парсинг</button>
-        </div>
-        {% endif %}
+        <!-- Кнопки управления парсингом убраны по запросу пользователя -->
     </header>
 
     <section class="task-meta">
@@ -152,9 +153,12 @@
                     <p><strong>Яндекс:</strong></p>
                     <ul style="list-style-type: none; padding-left: 0; margin-bottom: 1rem;">
                         <li>Количество карточек: <span style="color:#FFC107;">{{ yandex_stats.get('total_cards_found', 0) }}</span></li>
-                        <li>Общий рейтинг: <span style="color:#FFC107;">{{ "%.1f"|format(yandex_stats.get('aggregated_rating', 0)) }} {% if yandex_stats.get('aggregated_rating', 0) >= 4 %}★★★★☆{% elif yandex_stats.get('aggregated_rating', 0) >= 3 %}★★★☆☆{% elif yandex_stats.get('aggregated_rating', 0) >= 2 %}★★☆☆☆{% elif yandex_stats.get('aggregated_rating', 0) >= 1 %}★☆☆☆☆{% else %}☆☆☆☆☆{% endif %}</span></li>
-                        <li>Всего отзывов: <span style="color:#FFC107;">{{ yandex_stats.get('aggregated_reviews_count', 0) }}</span></li>
-                        <li>С оценкой (>0): <span style="color:#FFC107;">{{ y_rated }}</span></li>
+                        <li>Общий рейтинг: <span style="color:#FFC107;">{% if yandex_stats.get('aggregated_rating', 0) > 0 %}{{ "%.1f"|format(yandex_stats.get('aggregated_rating', 0)) }} {% if yandex_stats.get('aggregated_rating', 0) >= 4.5 %}★★★★★{% elif yandex_stats.get('aggregated_rating', 0) >= 4 %}★★★★{% elif yandex_stats.get('aggregated_rating', 0) >= 3.5 %}★★★{% elif yandex_stats.get('aggregated_rating', 0) >= 3 %}★★★{% elif yandex_stats.get('aggregated_rating', 0) >= 2.5 %}★★{% elif yandex_stats.get('aggregated_rating', 0) >= 2 %}★★{% elif yandex_stats.get('aggregated_rating', 0) >= 1.5 %}★{% elif yandex_stats.get('aggregated_rating', 0) >= 1 %}★{% endif %}{% else %}—{% endif %}</span></li>
+                        <li>Всего отзывов: <span style="color:#FFC107;">{{ y_total }}</span></li>
+                        {% set y_ratings = yandex_stats.get('aggregated_ratings_count', 0) %}
+                        {% if y_ratings > 0 %}
+                        <li>Всего оценок: <span style="color:#FFC107;">{{ y_ratings }}</span></li>
+                        {% endif %}
                         <li>Отвечено на: <span style="color:#FFC107;">{{ y_ans }}{% if y_total > 0 %} ({{ "%.0f"|format(y_ans_percent) }}%){% endif %}</span></li>
                         <li>Средняя скорость ответа: 
                             <span style="color:#FFC107;">
@@ -167,9 +171,15 @@
                                 {% endif %}
                             </span>
                         </li>
-                        <li>Негативных отзывов (1–2⭐, среди оценённых): <span style="color:#FFC107;">{{ y_neg }}</span></li>
-                        <li>Нейтральных отзывов (3⭐, среди оценённых): <span style="color:#FFC107;">{{ y_neu }}</span></li>
-                        <li>Позитивных отзывов (4–5⭐, среди оценённых): <span style="color:#FFC107;">{{ y_pos }}</span></li>
+                        <li>Негативных отзывов (1–2⭐): <span style="color:#FFC107;">{{ y_neg }}</span></li>
+                        {% if y_neu > 0 %}
+                        <li>Нейтральных отзывов (3⭐): <span style="color:#FFC107;">{{ y_neu }}</span></li>
+                        {% endif %}
+                        <li>Позитивных отзывов (4–5⭐): <span style="color:#FFC107;">{{ y_pos }}</span></li>
+                        {% set y_rated = yandex_stats.get('aggregated_reviews_with_rating_count', 0) or (y_pos + y_neg + y_neu) %}
+                        {% if y_rated > 0 %}
+                        <li>Всего с оценкой: <span style="color:#FFC107;">{{ y_rated }}</span></li>
+                        {% endif %}
                     </ul>
                 {% endif %}
                 

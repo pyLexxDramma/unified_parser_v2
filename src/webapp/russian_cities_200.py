@@ -332,3 +332,4 @@ RUSSIAN_CITIES_200 = [
 # Убираем дубликаты, сортируем и ограничиваем до 200 городов
 RUSSIAN_CITIES_200 = sorted(list(set(RUSSIAN_CITIES_200)))[:200]
 
+

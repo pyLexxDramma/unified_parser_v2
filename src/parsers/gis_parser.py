@@ -104,8 +104,6 @@ class GisParser(BaseParser):
         max_stable_iterations = 5
         scroll_iterations = 0
         max_card_count = 0
-        no_cards_iterations = 0  # Счетчик итераций без карточек
-        max_no_cards_iterations = 3  # Максимум итераций без карточек перед прерыванием
         
         if max_scrolls is None:
             max_scrolls = self._scroll_max_iter
@@ -113,38 +111,6 @@ class GisParser(BaseParser):
             scroll_step = self._scroll_step
         
         logger.info(f"Scroll parameters: Max iterations={max_scrolls}, Wait time={self._scroll_wait_time}s")
-        
-        # Сначала проверяем, есть ли карточки на странице вообще
-        try:
-            page_source, soup = self._get_page_source_and_soup()
-            initial_card_count = 0
-            for selector in self._card_selectors:
-                found = soup.select(selector)
-                initial_card_count = max(initial_card_count, len(found))
-            
-            if initial_card_count == 0:
-                # Проверяем наличие сообщения "ничего не найдено" или похожих индикаторов
-                no_results_indicators = [
-                    'ничего не найдено',
-                    'не найдено',
-                    'no results',
-                    'ничего не найдено',
-                    'результатов не найдено'
-                ]
-                page_text = soup.get_text().lower()
-                has_no_results_message = any(indicator in page_text for indicator in no_results_indicators)
-                
-                if has_no_results_message:
-                    logger.info("No cards found on page and 'no results' message detected. Skipping scroll.")
-                    return 0
-                
-                # Если карточек нет, но нет явного сообщения, делаем 1-2 прокрутки для проверки
-                logger.info(f"No cards found initially on page. Will do quick check (max {max_no_cards_iterations} iterations).")
-            else:
-                logger.info(f"Found {initial_card_count} cards initially. Starting scroll to load all cards.")
-                max_card_count = initial_card_count
-        except Exception as e:
-            logger.warning(f"Error checking initial card count: {e}. Proceeding with scroll.")
         
         scrollable_element_selector = None
         try:
@@ -190,15 +156,6 @@ class GisParser(BaseParser):
                     found = soup.select(selector)
                     current_card_count = max(current_card_count, len(found))
                 
-                # Если карточек нет, увеличиваем счетчик
-                if current_card_count == 0:
-                    no_cards_iterations += 1
-                    if no_cards_iterations >= max_no_cards_iterations and scroll_iterations >= max_no_cards_iterations:
-                        logger.info(f"No cards found after {no_cards_iterations} iterations. Stopping scroll early.")
-                        break
-                else:
-                    no_cards_iterations = 0  # Сбрасываем счетчик, если карточки найдены
-                
                 if scrollable_element_selector:
                     escaped_selector = json.dumps(scrollable_element_selector)
                     scroll_info_script = f"""
@@ -239,43 +196,13 @@ class GisParser(BaseParser):
                         else:
                             stable_count += 1
                             if stable_count >= max_stable_iterations:
-                                # Дополнительная проверка: делаем еще 2-3 прокрутки после стабилизации
-                                # на случай, если последние карточки загружаются с задержкой
-                                logger.info(f"Scroll height and card count stable for {stable_count} iterations. Doing final check...")
-                                for final_check in range(3):
-                                    time.sleep(self._scroll_wait_time * 1.5)
-                                    page_source, soup = self._get_page_source_and_soup()
-                                    final_card_count = 0
-                                    for selector in self._card_selectors:
-                                        found = soup.select(selector)
-                                        final_card_count = max(final_card_count, len(found))
-                                    if final_card_count > current_card_count:
-                                        logger.info(f"Found additional {final_card_count - current_card_count} cards during final check")
-                                        current_card_count = final_card_count
-                                        max_card_count = max(max_card_count, current_card_count)
-                                        stable_count = 0  # Сбрасываем счетчик, если нашли новые карточки
-                                        break
-                                    if scrollable_element_selector:
-                                        self.driver.execute_script(scroll_info_script)
-                                if stable_count >= max_stable_iterations:
-                                    logger.info(f"Confirmed: reached bottom after final check. Total cards: {max_card_count}")
-                                    break
+                                logger.info(f"Scroll height and card count stable for {stable_count} iterations. Reached bottom.")
+                                break
                             
                         if scroll_info.get('isAtBottom') and not has_grown:
                             time.sleep(2)
                             scroll_info = self.driver.execute_script(scroll_info_script)
                             if scroll_info and scroll_info.get('newScrollHeight') == last_scroll_height:
-                                # Дополнительная проверка карточек после достижения низа
-                                time.sleep(1)
-                                page_source, soup = self._get_page_source_and_soup()
-                                final_check_count = 0
-                                for selector in self._card_selectors:
-                                    found = soup.select(selector)
-                                    final_check_count = max(final_check_count, len(found))
-                                if final_check_count > current_card_count:
-                                    logger.info(f"Found additional {final_check_count - current_card_count} cards at bottom")
-                                    current_card_count = final_check_count
-                                    max_card_count = max(max_card_count, current_card_count)
                                 logger.info("Confirmed at bottom of scrollable container")
                                 break
                 else:
@@ -307,42 +234,13 @@ class GisParser(BaseParser):
                         else:
                             stable_count += 1
                             if stable_count >= max_stable_iterations:
-                                # Дополнительная проверка: делаем еще 2-3 прокрутки после стабилизации
-                                # на случай, если последние карточки загружаются с задержкой
-                                logger.info(f"Scroll height and card count stable for {stable_count} iterations. Doing final check...")
-                                for final_check in range(3):
-                                    time.sleep(self._scroll_wait_time * 1.5)
-                                    page_source, soup = self._get_page_source_and_soup()
-                                    final_card_count = 0
-                                    for selector in self._card_selectors:
-                                        found = soup.select(selector)
-                                        final_card_count = max(final_card_count, len(found))
-                                    if final_card_count > current_card_count:
-                                        logger.info(f"Found additional {final_card_count - current_card_count} cards during final check")
-                                        current_card_count = final_card_count
-                                        max_card_count = max(max_card_count, current_card_count)
-                                        stable_count = 0  # Сбрасываем счетчик, если нашли новые карточки
-                                        break
-                                    self.driver.execute_script(scroll_info_script)
-                                if stable_count >= max_stable_iterations:
-                                    logger.info(f"Confirmed: reached bottom after final check. Total cards: {max_card_count}")
-                                    break
+                                logger.info(f"Scroll height and card count stable for {stable_count} iterations. Reached bottom.")
+                                break
                         
                         if scroll_info.get('isAtBottom') and not has_grown:
                             time.sleep(2)
                             scroll_info = self.driver.execute_script(scroll_info_script)
                             if scroll_info and scroll_info.get('newScrollHeight') == last_scroll_height:
-                                # Дополнительная проверка карточек после достижения низа
-                                time.sleep(1)
-                                page_source, soup = self._get_page_source_and_soup()
-                                final_check_count = 0
-                                for selector in self._card_selectors:
-                                    found = soup.select(selector)
-                                    final_check_count = max(final_check_count, len(found))
-                                if final_check_count > current_card_count:
-                                    logger.info(f"Found additional {final_check_count - current_card_count} cards at bottom")
-                                    current_card_count = final_check_count
-                                    max_card_count = max(max_card_count, current_card_count)
                                 logger.info("Confirmed at bottom of page")
                                 break
                 
@@ -1614,7 +1512,26 @@ class GisParser(BaseParser):
                                     # Пробуем извлечь из атрибутов
                                     response_date_text = response_date_elem.get('datetime', '') or response_date_elem.get('data-date', '')
                                 if response_date_text:
-                                    response_date = parse_russian_date(response_date_text)
+                                    # Передаем год отзыва в парсер, чтобы правильно определить год ответа
+                                    if review_date:
+                                        response_date = parse_russian_date(response_date_text, current_year=review_date.year)
+                                        # Если дата ответа без года, но есть дата отзыва, используем год отзыва
+                                        if response_date and review_date:
+                                            # Если в response_date_text нет года, но есть день и месяц
+                                            if not re.search(r'\d{4}', response_date_text):
+                                                # Определяем год ответа: если ответ пришел позже отзыва в том же году - используем год отзыва
+                                                # Если ответ пришел раньше отзыва (переход через границу года) - используем следующий год
+                                                if response_date.month < review_date.month or (response_date.month == review_date.month and response_date.day < review_date.day):
+                                                    # Ответ пришел в следующем году
+                                                    response_date = response_date.replace(year=review_date.year + 1)
+                                                    logger.debug(f"Adjusted 2GIS response date year: answer came in next year (review={review_date.isoformat()}, response={response_date.isoformat()})")
+                                                else:
+                                                    # Ответ пришел в том же году
+                                                    response_date = response_date.replace(year=review_date.year)
+                                                    logger.debug(f"Adjusted 2GIS response date year: using year {response_date.year} from review date {review_date.year}")
+                                    else:
+                                        # Если нет даты отзыва, используем текущий год
+                                        response_date = parse_russian_date(response_date_text)
                             
                             # Проверяем маркер "официальный ответ" ТОЛЬКО в блоке ответа
                             answer_text = answer_elem.get_text(separator=' ', strip=True).lower() if answer_elem else ""
@@ -1632,7 +1549,26 @@ class GisParser(BaseParser):
                                 if not response_date_text:
                                     response_date_text = response_date_elem_direct.get('datetime', '') or response_date_elem_direct.get('data-date', '')
                                 if response_date_text:
-                                    response_date = parse_russian_date(response_date_text)
+                                    # Передаем год отзыва в парсер, чтобы правильно определить год ответа
+                                    if review_date:
+                                        response_date = parse_russian_date(response_date_text, current_year=review_date.year)
+                                        # Если дата ответа без года, но есть дата отзыва, используем год отзыва
+                                        if response_date and review_date:
+                                            # Если в response_date_text нет года, но есть день и месяц
+                                            if not re.search(r'\d{4}', response_date_text):
+                                                # Определяем год ответа: если ответ пришел позже отзыва в том же году - используем год отзыва
+                                                # Если ответ пришел раньше отзыва (переход через границу года) - используем следующий год
+                                                if response_date.month < review_date.month or (response_date.month == review_date.month and response_date.day < review_date.day):
+                                                    # Ответ пришел в следующем году
+                                                    response_date = response_date.replace(year=review_date.year + 1)
+                                                    logger.debug(f"Adjusted 2GIS response date year (direct): answer came in next year (review={review_date.isoformat()}, response={response_date.isoformat()})")
+                                                else:
+                                                    # Ответ пришел в том же году
+                                                    response_date = response_date.replace(year=review_date.year)
+                                                    logger.debug(f"Adjusted 2GIS response date year (direct): using year {response_date.year} from review date {review_date.year}")
+                                    else:
+                                        # Если нет даты отзыва, используем текущий год
+                                        response_date = parse_russian_date(response_date_text)
                                     logger.debug(f"Extracted response_date from direct search: {response_date}")
 
                         # 2ГИС часто помечает официальный ответ только текстом
@@ -2011,22 +1947,19 @@ class GisParser(BaseParser):
                                     
                                     # Проверяем, что ответ не пришел раньше отзыва (проверка на логику)
                                     if time_difference >= timedelta(0):
-                                        # Используем total_seconds() для более точного расчета дней (включая часы и минуты)
-                                        # Это важно для больших периодов времени
-                                        delta_days_precise = time_difference.total_seconds() / 86400.0
-                                        delta_days = time_difference.days  # Для обратной совместимости
+                                        # Накапливаем данные в глобальных переменных (Шаг 1)
+                                        total_response_time += time_difference
+                                        count_with_replies += 1
                                         
-                                        # Фильтруем выбросы: разумные пределы для времени ответа (от 0 до 2 лет)
-                                        if delta_days_precise <= 730:  # Максимум 2 года (730 дней)
-                                            # Накапливаем данные в глобальных переменных (Шаг 1)
-                                            total_response_time += time_difference
-                                            count_with_replies += 1
-                                            response_time_sum_days += float(delta_days_precise)  # Используем точное значение
-                                            response_time_count += 1
-                                            
-                                            logger.debug(f"Added response time: {time_difference} ({delta_days_precise:.2f} days, {delta_days} days integer) (review: {review_date}, response: {response_date})")
-                                        else:
-                                            logger.warning(f"Skipped unrealistic response time: {delta_days_precise:.2f} days (review: {review_date}, response: {response_date}) - exceeds 2 years limit")
+                                        # Также сохраняем в старых переменных для совместимости (в днях)
+                                        delta_days = time_difference.days
+                                        response_time_sum_days += float(delta_days)
+                                        response_time_count += 1
+                                        
+                                        logger.debug(f"Added response time: {time_difference} ({delta_days} days) (review: {review_date}, response: {response_date})")
+                                    else:
+                                        logger.warning(f"Negative time difference detected during parsing: {time_difference} (review: {review_date}, response: {response_date})")
+                                        logger.warning(f"  This review will be excluded from average response time calculation")
                                 except Exception as e:
                                     logger.debug(f"Error calculating response time: {e}")
                                     pass
@@ -2134,20 +2067,18 @@ class GisParser(BaseParser):
                                 continue
                     
                     if review_date_parsed and response_date_parsed:
-                        time_diff = response_date_parsed - review_date_parsed
-                        if time_diff >= timedelta(0):
-                            # Используем total_seconds() для более точного расчета (включая часы и минуты)
-                            delta_precise = time_diff.total_seconds() / 86400.0
-                            delta_days = time_diff.days  # Для логирования
-                            # Фильтруем выбросы: разумные пределы для времени ответа (от 0 до 2 лет)
-                            if delta_precise <= 730:  # Максимум 2 года (730 дней)
-                                answered_response_time_sum += float(delta_precise)
-                                answered_response_time_count += 1
-                                logger.info(f"Added response time for answered review: {delta_precise:.2f} days ({delta_days} days integer) (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
-                            else:
-                                logger.warning(f"Skipped unrealistic response time: {delta_precise:.2f} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')}) - exceeds 2 years limit")
-                        else:
-                            logger.warning(f"Negative response time delta: {time_diff} (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
+                        delta = (response_date_parsed - review_date_parsed).days
+                        if delta >= 0 and delta < 3650:  # Разумные пределы: не более 10 лет
+                            answered_response_time_sum += float(delta)
+                            answered_response_time_count += 1
+                            logger.info(f"Added response time for answered review: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
+                        elif delta < 0:
+                            logger.warning(f"Negative response time delta: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')}, review_datetime={review.get('review_date_datetime', 'N/A')}, response_datetime={review.get('response_date_datetime', 'N/A')})")
+                            # Логируем детали для отладки
+                            if review.get('review_date_datetime') and review.get('response_date_datetime'):
+                                logger.warning(f"  DEBUG: review_date_datetime={review.get('review_date_datetime')}, response_date_datetime={review.get('response_date_datetime')}")
+                        elif delta >= 3650:
+                            logger.warning(f"Unrealistic response time delta: {delta} days (review_date={review.get('review_date', 'N/A')}, response_date={review.get('response_date', 'N/A')})")
             
             # Шаг 4: Финальный расчет среднего времени ответа (после завершения цикла парсинга)
             # Используем данные, накопленные в цикле (total_response_time и count_with_replies)
@@ -2310,25 +2241,6 @@ class GisParser(BaseParser):
             # Если знаем ожидаемое количество отзывов, используем его как ориентир
             target_reviews = expected_count if expected_count > 0 else None
             
-            # Проверяем наличие отзывов перед началом прокрутки
-            page_source, soup = self._get_page_source_and_soup()
-            initial_review_count = 0
-            for selector in review_selectors:
-                found = soup.select(selector)
-                valid_reviews = [
-                    elem for elem in found 
-                    if elem.get_text(strip=True) and len(elem.get_text(strip=True)) >= 3
-                    and 'читать целиком' not in elem.get_text(strip=True).lower()
-                ]
-                initial_review_count = max(initial_review_count, len(valid_reviews))
-            
-            # Если отзывов нет изначально и нет целевого количества, делаем быструю проверку
-            if initial_review_count == 0 and not target_reviews:
-                logger.info("No reviews found initially. Will do quick check (max 5 iterations) before stopping.")
-                max_quick_check_iterations = 5
-            else:
-                max_quick_check_iterations = None
-            
             while scroll_iterations < max_scrolls:
                 # Проверяем таймаут
                 elapsed_time = time_module.time() - start_time
@@ -2363,13 +2275,6 @@ class GisParser(BaseParser):
                     f"no_change: {no_change_count}/{required_no_change}, "
                     f"elapsed: {elapsed_time:.1f}s)"
                 )
-                
-                # Раннее прерывание: если отзывов нет и мы уже сделали несколько итераций
-                if current_review_count == 0 and not target_reviews:
-                    # Если после 5 итераций отзывов все еще нет, прерываем прокрутку
-                    if scroll_iterations >= 5:
-                        logger.info(f"No reviews found after {scroll_iterations + 1} iterations. Stopping scroll early.")
-                        break
                 
                 # Проверяем, увеличилось ли количество отзывов
                 if current_review_count > last_review_count:
@@ -3966,15 +3871,9 @@ class GisParser(BaseParser):
                             review_date = parse_russian_date(review['review_date'])
                             response_date = parse_russian_date(review['response_date'])
                             if review_date and response_date:
-                                time_diff = response_date - review_date
-                                if time_diff >= timedelta(0):
-                                    # Используем total_seconds() для более точного расчета
-                                    delta_precise = time_diff.total_seconds() / 86400.0
-                                    # Фильтруем выбросы: разумные пределы для времени ответа (от 0 до 2 лет)
-                                    if delta_precise <= 730:  # Максимум 2 года (730 дней)
-                                        response_times.append(delta_precise)
-                                    else:
-                                        logger.debug(f"Skipped unrealistic response time in aggregation: {delta_precise:.2f} days")
+                                delta = (response_date - review_date).days
+                                if delta >= 0:
+                                    response_times.append(delta)
                         except Exception:
                             pass
                 logger.info(f"Processed {total_reviews_processed} reviews, found {len(response_times)} response time entries")

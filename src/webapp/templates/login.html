@@ -74,6 +74,16 @@
 <div class="login-container">
     <h1>🔒 Вход в систему</h1>
     
+    <!-- Информационное уведомление о правилах заполнения формы -->
+    <div style="margin-bottom: 20px; padding: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <div style="display: flex; align-items: flex-start; gap: 10px;">
+            <div style="font-size: 20px; line-height: 1;">⚠️</div>
+            <div style="flex: 1; font-size: 0.95em; line-height: 1.5;">
+                <strong>Важно!</strong> Перед заполнением формы парсинга рекомендуется ознакомиться с правилами заполнения формы и подробной инструкцией во вкладке <strong>"Подробнее"</strong> на странице формы парсинга.
+            </div>
+        </div>
+    </div>
+    
     {% if error %}
     <div class="message error">{{ error }}</div>
     {% endif %}

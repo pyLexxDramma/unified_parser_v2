@@ -215,6 +215,7 @@ async def read_root(request: Request):
         return RedirectResponse(url=f"{url_prefix}/login", status_code=302)
     error = request.query_params.get("error")
     success = request.query_params.get("success")
+    active_task_id = request.query_params.get("active_task_id")
     last_form = request.session.get("last_form") if request.session else None
     return templates.TemplateResponse(
         "index.html",
@@ -222,6 +223,7 @@ async def read_root(request: Request):
             "request": request,
             "error": error,
             "success": success,
+            "active_task_id": active_task_id,
             "last_form": last_form,
             "url_prefix": url_prefix,
         },
@@ -601,10 +603,17 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
     ]
     if active_parsing_tasks:
         logger.warning(f"Parsing already in progress. Active tasks: {len(active_parsing_tasks)}")
+        # Формируем информативное сообщение с информацией о текущей задаче
+        active_task = active_parsing_tasks[0]  # Берем первую активную задачу
+        active_task_id = active_task.task_id
+        company_name = active_task.source_info.get('company_name', 'неизвестная компания') if active_task.source_info else 'неизвестная компания'
+        error_message = (
+            f"⚠️ Парсинг уже выполняется для компании '{company_name}' (ID задачи: {active_task_id[:8]}...). "
+            f"Пожалуйста, дождитесь завершения текущего парсинга перед запуском нового. "
+            f"Вы можете просмотреть статус текущей задачи по ссылке: {url_prefix}/tasks/{active_task_id}"
+        )
         return RedirectResponse(
-            url=f"{url_prefix}/?error=" + urllib.parse.quote(
-                "Парсинг уже выполняется. Пожалуйста, дождитесь завершения текущего парсинга, чтобы избежать блокировки."
-            ),
+            url=f"{url_prefix}/?error=" + urllib.parse.quote(error_message) + f"&active_task_id={active_task_id}",
             status_code=302,
         )
 
@@ -630,7 +639,7 @@ async def start_parsing(request: Request, form_data: ParsingForm = Depends(Parsi
             if form_data.search_scope == 'country':
                 if getattr(form_data, "cities", ""):
                     # Если города указаны пользователем, используем их
-                    cities_list = _parse_cities(form_data.cities)
+                cities_list = _parse_cities(form_data.cities)
                 else:
                     # Если города не указаны, используем список крупных городов России
                     # для полного покрытия всех филиалов по стране
@@ -1764,7 +1773,7 @@ async def api_restart_task(request: Request, task_id: str):
             cities_list: List[str] = []
             if cloned_form.search_scope == 'country':
                 if getattr(cloned_form, "cities", ""):
-                    cities_list = _parse_cities(cloned_form.cities)
+                cities_list = _parse_cities(cloned_form.cities)
                 else:
                     # Если города не указаны, используем список крупных городов России
                     cities_list = DEFAULT_RUSSIAN_CITIES.copy()

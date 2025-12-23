@@ -104,6 +104,7 @@
         if (!progressText) progressText = '';
         
         const progressContainer = document.getElementById('progress-container');
+        const parsingAnimation = document.getElementById('parsing-animation');
         const progressStatusText = document.getElementById('progress-status-text');
         const progressTimeEstimate = document.getElementById('progress-time-estimate');
         
@@ -112,8 +113,10 @@
         
         if (taskStatus === 'RUNNING' || taskStatus === 'PENDING') {
             if (progressContainer) progressContainer.style.display = 'block';
+            if (parsingAnimation) parsingAnimation.style.display = 'flex';
         } else {
             if (progressContainer) progressContainer.style.display = 'none';
+            if (parsingAnimation) parsingAnimation.style.display = 'none';
             return;
         }
         
@@ -150,9 +153,9 @@
                 currentProgress = 66;
             } else if (text.includes('поиск') || text.includes('searching') || text.includes('инициализация')) {
                 currentProgress = 33;
-            } else {
-                const cardsMatch = progressText.match(/найдено\s+(\d+)/);
-                if (cardsMatch) {
+        } else {
+            const cardsMatch = progressText.match(/найдено\s+(\d+)/);
+            if (cardsMatch) {
                     currentProgress = 50;
                 }
             }
@@ -194,7 +197,7 @@
                         timeEstimate = `Ориентировочное время до завершения: ~${hours} ч. ${remainingMinutes} мин.`;
                     } else if (minutes > 0) {
                         timeEstimate = `Ориентировочное время до завершения: ~${minutes} мин.`;
-                    } else {
+            } else {
                         timeEstimate = `Ориентировочное время до завершения: ~${Math.ceil(secondsRemaining)} сек.`;
                     }
                 } else {
@@ -209,7 +212,7 @@
         
         if (progressTimeEstimate) {
             progressTimeEstimate.textContent = timeEstimate;
-        }
+            }
     }
     
     // Начинаем проверку статуса каждые 2 секунды (увеличена частота обновления)
